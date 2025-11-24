@@ -1,0 +1,25 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+- id: markdown-table-fixer
+  name: Markdown Table Fixer
+  description: Fix markdown table formatting issues
+  entry: markdown-table-fixer
+  language: python
+  files: '\.md$|\.markdown$|\.mdown$|\.mkd$'
+  pass_filenames: false
+  args: [lint, ., --fix]
+  always_run: false
+  require_serial: true
+
+- id: markdown-table-fixer-check
+  name: Markdown Table Fixer (Check Only)
+  description: Check markdown table formatting without fixing
+  entry: markdown-table-fixer
+  language: python
+  files: '\.md$|\.markdown$|\.mdown$|\.mkd$'
+  pass_filenames: false
+  args: [lint, ., --check]
+  always_run: false
+  require_serial: true
