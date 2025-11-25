@@ -73,3 +73,40 @@ jobs:
           # Error if step above did NOT fail
           echo "Error: previous test step did NOT fail ❌"
           exit 1
+
+  ### Test the CLI Tool ###
+  cli-tests:
+    name: "Test CLI Tool"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      # Harden the runner used by this workflow
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: "Checkout repository"
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: "Set up Python"
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.11"
+
+      - name: "Install package"
+        shell: bash
+        run: |
+          # Install the local package
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: "Run integration tests"
+        shell: bash
+        run: |
+          # Run the comprehensive integration test script
+          chmod +x scripts/integration-test.sh
+          ./scripts/integration-test.sh

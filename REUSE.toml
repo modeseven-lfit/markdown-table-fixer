@@ -1,0 +1,24 @@
+version = 1
+
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# Licensing statement required for GHA tests and linting to pass for only this repository
+
+[[annotations]]
+path = [
+     "*.lock",
+     "src/markdown_table_fixer/_version.py",
+     "test_coverage_report*",
+     ".coverage*",
+     "htmlcov/**",
+     "coverage.xml",
+     ".pytest_cache/**",
+     ".mypy_cache/**",
+     ".ruff_cache/**",
+     "__pycache__/**",
+     "**/__pycache__/**",
+     "**/*.pyc"
+]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "2025 The Linux Foundation"

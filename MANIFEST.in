@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+include LICENSE
+include REUSE.toml
+include .pre-commit-hooks.yaml
+include pyproject.toml
+
+recursive-include src *.py
+recursive-include src *.typed
+
+exclude .gitignore
+exclude .editorconfig
+exclude .gitlint
+exclude .yamllint
+exclude .pre-commit-config.yaml
+exclude demo.sh
+
+recursive-exclude tests *
+recursive-exclude examples *
+recursive-exclude htmlcov *
+recursive-exclude .pytest_cache *
+recursive-exclude .mypy_cache *
+recursive-exclude .ruff_cache *
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude * *.so
+recursive-exclude * *.dylib
