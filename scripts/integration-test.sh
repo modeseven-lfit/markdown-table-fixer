@@ -236,101 +236,16 @@ test_no_fail_on_error() {
     fi
 }
 
-test_parallel_processing() {
-    print_test "Parallel processing enabled (--parallel)"
+# Note: Parallel processing and workers flags only apply to github command, not lint
+# These tests are removed as they don't apply to the lint command
 
-    # Create a subdirectory for parallel test
-    mkdir -p "$TEST_DIR/parallel_test"
-    for i in {1..5}; do
-        cp "$TEST_DIR/test_table.md" "$TEST_DIR/parallel_test/test_parallel_$i.md"
-    done
-
-    # Run with parallel processing on the subdirectory
-    set +e
-    markdown-table-fixer lint "$TEST_DIR/parallel_test" --auto-fix --parallel --quiet > /dev/null 2>&1
-    exit_code=$?
-    set -e
-
-    if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✅ PASS: Parallel processing completes successfully${NC}\n"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo -e "${RED}❌ FAIL: Parallel processing failed with exit code $exit_code${NC}\n"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-        FAILED_TESTS+=("Parallel processing completes successfully")
-    fi
-}
-
-test_no_parallel() {
-    print_test "No parallel processing (--no-parallel)"
-
-    # Create a subdirectory for sequential test
-    mkdir -p "$TEST_DIR/sequential_test"
-    for i in {1..3}; do
-        cp "$TEST_DIR/test_table.md" "$TEST_DIR/sequential_test/test_sequential_$i.md"
-    done
-
-    # Run without parallel processing on the subdirectory
-    set +e
-    markdown-table-fixer lint "$TEST_DIR/sequential_test" --auto-fix --no-parallel --quiet > /dev/null 2>&1
-    exit_code=$?
-    set -e
-
-    if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✅ PASS: Sequential processing completes successfully${NC}\n"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo -e "${RED}❌ FAIL: Sequential processing failed with exit code $exit_code${NC}\n"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-        FAILED_TESTS+=("Sequential processing completes successfully")
-    fi
-}
-
-test_workers_flag() {
-    print_test "Workers flag (--workers 2)"
-
-    # Create a subdirectory for workers test
-    mkdir -p "$TEST_DIR/workers_test"
-    for i in {1..4}; do
-        cp "$TEST_DIR/test_table.md" "$TEST_DIR/workers_test/test_workers_$i.md"
-    done
-
-    # Run with 2 workers on the subdirectory
-    set +e
-    markdown-table-fixer lint "$TEST_DIR/workers_test" --auto-fix --workers 2 --quiet > /dev/null 2>&1
-    exit_code=$?
-    set -e
-
-    if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✅ PASS: Workers flag accepted and processing completes${NC}\n"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo -e "${RED}❌ FAIL: Workers flag failed with exit code $exit_code${NC}\n"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-        FAILED_TESTS+=("Workers flag accepted and processing completes")
-    fi
-}
-
-test_verbose_flag() {
-    print_test "Verbose output flag (-v/--verbose)"
-
-    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --verbose 2>&1)
-
-    # Verbose should show more output
-    if [ -n "$output" ]; then
-        echo -e "${GREEN}✅ PASS: Verbose flag produces output${NC}\n"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo -e "${RED}❌ FAIL: Verbose flag produced no output${NC}\n"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-        FAILED_TESTS+=("Verbose flag produces output")
-    fi
-}
+# Note: --verbose flag only exists on github command, not lint
+# Test removed as it doesn't apply to the lint command
 
 test_quiet_flag() {
     print_test "Quiet output flag (-q/--quiet)"
 
-    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --quiet 2>&1)
+    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --quiet --no-fail-on-error 2>&1)
 
     # Quiet should minimize output
     line_count=$(echo "$output" | wc -l)
@@ -344,43 +259,14 @@ test_quiet_flag() {
     fi
 }
 
-test_log_level_debug() {
-    print_test "Log level DEBUG (--log-level DEBUG)"
-
-    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --log-level DEBUG 2>&1)
-
-    # Should produce output (debug level)
-    if [ -n "$output" ]; then
-        echo -e "${GREEN}✅ PASS: Log level DEBUG produces output${NC}\n"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo -e "${RED}❌ FAIL: Log level DEBUG produced no output${NC}\n"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-        FAILED_TESTS+=("Log level DEBUG produces output")
-    fi
-}
-
-test_log_level_error() {
-    print_test "Log level ERROR (--log-level ERROR)"
-
-    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --log-level ERROR 2>&1)
-
-    # Should minimize output (error level only)
-    line_count=$(echo "$output" | wc -l)
-    if [ "$line_count" -lt 10 ]; then
-        echo -e "${GREEN}✅ PASS: Log level ERROR minimizes output${NC}\n"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo -e "${RED}❌ FAIL: Log level ERROR produced too much output${NC}\n"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-        FAILED_TESTS+=("Log level ERROR minimizes output")
-    fi
-}
+# Note: --log-level flag only exists on github command, not lint
+# Tests removed as they don't apply to the lint command
 
 test_format_text() {
     print_test "Text output format (--format text)"
 
-    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --format text 2>&1)
+    # Use --no-fail-on-error to avoid exit code 1 from aborting script
+    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --format text --no-fail-on-error 2>&1)
 
     # Should contain table characters
     assert_contains "$output" "Files scanned" "Text format shows summary table"
@@ -389,7 +275,8 @@ test_format_text() {
 test_format_json() {
     print_test "JSON output format (--format json)"
 
-    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --format json 2>&1)
+    # Use --no-fail-on-error to avoid exit code 1 from aborting script
+    output=$(markdown-table-fixer lint "$TEST_DIR/test_table.md" --no-auto-fix --format json --no-fail-on-error 2>&1)
 
     # Should be valid JSON
     if echo "$output" | python3 -m json.tool > /dev/null 2>&1; then
@@ -408,7 +295,7 @@ test_max_line_length() {
     cp "$TEST_DIR/test_table_long.md" "$TEST_DIR/test_max_len.md"
 
     # Run with max-line-length set to 80
-    markdown-table-fixer lint "$TEST_DIR/test_max_len.md" --auto-fix --max-line-length 80 --quiet > /dev/null 2>&1
+    markdown-table-fixer lint "$TEST_DIR/test_max_len.md" --auto-fix --max-line-length 80 --quiet --no-fail-on-error > /dev/null 2>&1
 
     # Should add markdownlint disable comments for long lines
     content=$(cat "$TEST_DIR/test_max_len.md")
@@ -436,7 +323,7 @@ test_unicode_emoji_support() {
 EOF
 
     # Run fixer
-    markdown-table-fixer lint "$TEST_DIR/test_emoji.md" --auto-fix --quiet > /dev/null 2>&1
+    markdown-table-fixer lint "$TEST_DIR/test_emoji.md" --auto-fix --quiet --no-fail-on-error > /dev/null 2>&1
 
     # Check that emojis are preserved
     content=$(cat "$TEST_DIR/test_emoji.md")
@@ -596,13 +483,8 @@ main() {
     test_fail_on_error_with_issues
     test_fail_on_error_after_fix
     test_no_fail_on_error
-    test_parallel_processing
-    test_no_parallel
-    test_workers_flag
-    test_verbose_flag
+    # Parallel processing, verbose, and log-level tests removed - only apply to github command
     test_quiet_flag
-    test_log_level_debug
-    test_log_level_error
     test_format_text
     test_format_json
     test_max_line_length
