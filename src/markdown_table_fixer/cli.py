@@ -9,10 +9,14 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.logging import RichHandler
 import typer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from ._version import __version__
 from .exceptions import (
@@ -67,12 +71,25 @@ def setup_logging(
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-# Create Typer app
+# Create Typer app with version in help
 app = typer.Typer(
     name="markdown-table-fixer",
-    help="Fix markdown table formatting issues",
+    help=f"markdown-table-fixer version {__version__}\n\nFix markdown table formatting issues",
     add_completion=False,
+    rich_markup_mode="rich",
 )
+
+
+# Update command docstrings with version at module load time
+def _add_version_to_docstring(
+    cmd_func: Callable[..., None],
+) -> Callable[..., None]:
+    """Add version info to command docstring."""
+    if cmd_func.__doc__:
+        cmd_func.__doc__ = (
+            f"markdown-table-fixer version {__version__}\n\n" + cmd_func.__doc__
+        )
+    return cmd_func
 
 
 @app.callback()  # type: ignore[misc]
@@ -90,6 +107,7 @@ def main(
 
 
 @app.command()  # type: ignore[misc]
+@_add_version_to_docstring  # type: ignore[misc]
 def lint(
     path: Path = typer.Argument(
         Path("."),
@@ -119,6 +137,13 @@ def lint(
         "--check",
         help="Exit with error if issues found (CI mode)",
     ),
+    _version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show version and exit",
+        callback=version_callback,
+        is_eager=True,
+    ),
     max_line_length: int = typer.Option(
         80,
         "--max-line-length",
@@ -142,8 +167,7 @@ def lint(
         help="Exit with error if issues found (default: enabled)",
     ),
 ) -> None:
-    """
-    Scan and optionally fix markdown table formatting issues.
+    """Scan and optionally fix markdown table formatting issues.
 
     By default, scans the current directory and reports issues without fixing.
     Use --fix to automatically fix issues found.
@@ -204,6 +228,7 @@ def lint(
 
 
 @app.command()  # type: ignore[misc]
+@_add_version_to_docstring  # type: ignore[misc]
 def github(
     target: str = typer.Argument(
         ...,
@@ -268,9 +293,15 @@ def github(
         "--log-level",
         help="Set logging level",
     ),
+    _version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show version and exit",
+        callback=version_callback,
+        is_eager=True,
+    ),
 ) -> None:
-    """
-    Fix markdown tables in GitHub PRs.
+    """Fix markdown tables in GitHub PRs.
 
     Can process either:
     - An entire organization (scans all PRs for table issues)
