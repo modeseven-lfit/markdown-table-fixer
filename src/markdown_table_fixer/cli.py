@@ -114,12 +114,6 @@ def lint(
         help="Path to scan for markdown files",
         exists=True,
     ),
-    fix: bool = typer.Option(
-        False,
-        "--fix",
-        "-f",
-        help="Automatically fix issues found",
-    ),
     output_format: OutputFormat = typer.Option(
         OutputFormat.TEXT,
         "--format",
@@ -149,13 +143,6 @@ def lint(
         "--max-line-length",
         help="Maximum line length before adding MD013 disable comments",
     ),
-    path_arg: Path | None = typer.Option(
-        None,
-        "--path",
-        "-p",
-        help="Path to scan (alternative to positional argument)",
-        exists=True,
-    ),
     auto_fix: bool = typer.Option(
         False,
         "--auto-fix/--no-auto-fix",
@@ -170,19 +157,19 @@ def lint(
     """Scan and optionally fix markdown table formatting issues.
 
     By default, scans the current directory and reports issues without fixing.
-    Use --fix to automatically fix issues found.
+    Use --auto-fix to automatically fix issues found.
 
     Examples:
       markdown-table-fixer lint                    # Scan current directory
-      markdown-table-fixer lint --fix              # Scan and fix issues
+      markdown-table-fixer lint --auto-fix         # Scan and fix issues
       markdown-table-fixer lint /path/to/docs      # Scan specific path
       markdown-table-fixer lint --check            # CI mode: fail if issues found
     """
-    # Use path_arg if provided, otherwise use positional path
-    scan_path = path_arg if path_arg else path
+    # Use the positional path argument
+    scan_path = path
 
-    # Auto-fix takes precedence over fix flag
-    should_fix = auto_fix or fix
+    # Use auto_fix flag to determine if we should fix issues
+    should_fix = auto_fix
 
     # Don't print status messages in JSON mode or when quiet
     if not quiet and output_format != OutputFormat.JSON:

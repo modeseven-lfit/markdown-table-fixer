@@ -34,6 +34,30 @@ class PRFixer:
         self.client = client
         self.logger = logging.getLogger("markdown_table_fixer.pr_fixer")
 
+    def _sanitize_message(self, message: str) -> str:
+        """Sanitize error messages to remove tokens.
+
+        Args:
+            message: The message to sanitize
+
+        Returns:
+            Message with tokens redacted
+        """
+        if not message:
+            return message
+
+        # Redact tokens from URLs (x-access-token:TOKEN@ pattern)
+        sanitized = re.sub(
+            r"x-access-token:[^@]+@", "x-access-token:***REDACTED***@", message
+        )
+
+        # Also redact any remaining token-like strings (common GitHub token formats)
+        sanitized = re.sub(
+            r"gh[ps]_[a-zA-Z0-9]{36,}", "***REDACTED***", sanitized
+        )
+
+        return sanitized
+
     async def fix_pr_by_url(
         self,
         pr_url: str,
@@ -195,7 +219,9 @@ class PRFixer:
             self.logger.debug(f"Cloning {clone_url} to {repo_dir}")
 
             try:
-                # Clone the repository
+                # Clone the repository with authentication
+                # Note: Token is embedded in URL for git authentication. We use capture_output=True
+                # and sanitize all error messages to prevent token leakage in logs.
                 auth_url = clone_url.replace(
                     "https://", f"https://x-access-token:{self.client.token}@"
                 )
@@ -224,12 +250,13 @@ class PRFixer:
                             conflict_strategy,
                         )
                     except subprocess.CalledProcessError as e:
-                        return GitHubFixResult(
-                            pr_info=pr_info,
-                            success=False,
-                            message=f"Failed to sync with base branch using {sync_strategy}: {e.stderr}",
-                            error=str(e),
+                        sanitized_stderr = self._sanitize_message(
+                            e.stderr or ""
                         )
+                        sanitized_error = self._sanitize_message(str(e))
+                        error_msg = f"Failed to sync with base branch using {sync_strategy}: {sanitized_stderr}"
+                        self.logger.error(error_msg)
+                        raise RuntimeError(error_msg) from e
 
                 # Find and fix markdown files
                 scanner = MarkdownFileScanner(repo_dir)
@@ -329,7 +356,8 @@ class PRFixer:
                 )
 
                 if result.returncode == 0:
-                    # No changes
+                    # No changes - return early with success
+                    self.logger.info("No formatting changes needed")
                     return GitHubFixResult(
                         pr_info=pr_info,
                         success=True,
@@ -348,20 +376,36 @@ class PRFixer:
                 )
 
                 # Force push to update the PR
+                # IMPORTANT: We use --force-with-lease instead of --force for safety in async environments:
+                # - PR authors may push new commits while we're processing
+                # - CI/CD systems may push commits concurrently
+                # - Multiple tool instances could process the same PR simultaneously
+                # --force-with-lease will FAIL if the remote branch has changed since our clone,
+                # preventing us from accidentally overwriting commits. This is critical even though
+                # we clone fresh, because the remote can change AFTER clone but BEFORE push.
                 self.logger.debug(f"Force pushing to {pr_info.head_ref}")
-                subprocess.run(
-                    [
-                        "git",
-                        "push",
-                        "--force-with-lease",
-                        "origin",
-                        pr_info.head_ref,
-                    ],
-                    cwd=repo_dir,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+                try:
+                    subprocess.run(
+                        [
+                            "git",
+                            "push",
+                            "--force-with-lease",
+                            "origin",
+                            pr_info.head_ref,
+                        ],
+                        cwd=repo_dir,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    # --force-with-lease failed, likely because remote branch was updated
+                    sanitized_stderr = self._sanitize_message(e.stderr or "")
+                    self.logger.warning(
+                        f"Push rejected - remote branch {pr_info.head_ref} was updated during processing: {sanitized_stderr}"
+                    )
+                    error_msg = "Push rejected: PR branch was updated while processing. Please retry."
+                    raise RuntimeError(error_msg) from e
 
                 # Create a comment on the PR
                 sync_msg = ""
@@ -392,11 +436,21 @@ class PRFixer:
                 )
 
             except subprocess.CalledProcessError as e:
-                self.logger.error(f"Git operation failed: {e.stderr}")
+                sanitized_stderr = self._sanitize_message(e.stderr or "")
+                sanitized_error = self._sanitize_message(str(e))
+                self.logger.error(f"Git operation failed: {sanitized_stderr}")
                 return GitHubFixResult(
                     pr_info=pr_info,
                     success=False,
-                    message=f"Git operation failed: {e.stderr}",
+                    message=f"Git operation failed: {sanitized_stderr}",
+                    error=sanitized_error,
+                )
+            except RuntimeError as e:
+                # Handle expected errors (sync failures, push rejections)
+                return GitHubFixResult(
+                    pr_info=pr_info,
+                    success=False,
+                    message=str(e),
                     error=str(e),
                 )
             except Exception as e:
@@ -464,7 +518,8 @@ class PRFixer:
                         cwd=repo_dir,
                         capture_output=True,
                     )
-                    error_msg = f"Rebase failed: {e.stderr}"
+                    sanitized_stderr = self._sanitize_message(e.stderr or "")
+                    error_msg = f"Rebase failed: {sanitized_stderr}"
                     self.logger.error(error_msg)
                     raise subprocess.CalledProcessError(
                         e.returncode, e.cmd, e.output, e.stderr
@@ -509,7 +564,8 @@ class PRFixer:
                         cwd=repo_dir,
                         capture_output=True,
                     )
-                    error_msg = f"Merge failed: {e.stderr}"
+                    sanitized_stderr = self._sanitize_message(e.stderr or "")
+                    error_msg = f"Merge failed: {sanitized_stderr}"
                     self.logger.error(error_msg)
                     raise subprocess.CalledProcessError(
                         e.returncode, e.cmd, e.output, e.stderr

@@ -53,7 +53,7 @@ markdown-table-fixer lint /path/to/docs
 Auto-fix issues found:
 
 ```bash
-markdown-table-fixer lint --fix
+markdown-table-fixer lint --auto-fix
 ```
 
 ### GitHub Mode
@@ -172,13 +172,12 @@ The tool enforces the following formatting standards:
 
 <!-- markdownlint-disable MD013 -->
 
-| Flag       | Short | Default | Description                     |
-| ---------- | ----- | ------- | ------------------------------- |
-| `--path`   | `-p`  | `.`     | Path to scan for markdown files |
-| `--fix`    | `-f`  | `false` | Automatically fix issues found  |
-| `--format` |       | `text`  | Output format: text, json       |
-| `--quiet`  | `-q`  | `false` | Suppress output except errors   |
-| `--check`  |       | `false` | Exit with error if issues found |
+| Flag         | Short | Default | Description                     |
+| ------------ | ----- | ------- | ------------------------------- |
+| `--auto-fix` |       | `false` | Automatically fix issues found  |
+| `--format`   |       | `text`  | Output format: text, json       |
+| `--quiet`    | `-q`  | `false` | Suppress output except errors   |
+| `--check`    |       | `false` | Exit with error if issues found |
 
 <!-- markdownlint-enable MD013 -->
 

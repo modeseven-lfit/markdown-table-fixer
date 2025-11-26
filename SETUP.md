@@ -25,7 +25,7 @@ The fastest way to get started:
 pip install markdown-table-fixer
 
 # Run on current directory
-markdown-table-fixer lint --fix
+markdown-table-fixer lint --auto-fix
 ```
 
 ## Installation Methods
@@ -96,7 +96,7 @@ Automatically fixes table formatting issues:
 ```yaml
 - id: markdown-table-fixer
   # Optional: customize behavior
-  args: [lint, ., --fix]
+  args: [lint, ., --auto-fix]
 ```
 
 #### markdown-table-fixer-check (validation)
@@ -311,10 +311,10 @@ pip install -e .
 
 **Problem**: Tool detects issues but doesn't fix them
 
-**Solution**: Use the `--fix` flag:
+**Solution**: Use the `--auto-fix` flag:
 
 ```bash
-markdown-table-fixer lint --fix
+markdown-table-fixer lint --auto-fix
 ```
 
 Or use the auto-fix pre-commit hook:
@@ -376,13 +376,13 @@ pip install markdown-table-fixer
 
    ```yaml
    - id: markdown-table-fixer
-     args: [lint, ., --fix]  # Ensure --fix is present
+     args: [lint, ., --auto-fix]  # Ensure --auto-fix is present
    ```
 
 3. Run manually to see detailed output:
 
    ```bash
-   markdown-table-fixer lint . --fix -v
+   markdown-table-fixer lint . --auto-fix
    ```
 
 ## Platform-Specific Notes

@@ -9,7 +9,7 @@
   language: python
   files: '\.md$|\.markdown$|\.mdown$|\.mkd$'
   pass_filenames: false
-  args: [lint, ., --fix]
+  args: [lint, ., --auto-fix]
   always_run: false
   require_serial: true
 

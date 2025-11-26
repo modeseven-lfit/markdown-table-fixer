@@ -94,18 +94,32 @@ class PRScanner:
 
                 try:
                     # Fetch first page of PRs with status checks
-                    (
-                        prs_nodes,
-                        page_info,
-                    ) = await self._fetch_repo_prs_first_page(owner, repo_name)
+                    try:
+                        (
+                            prs_nodes,
+                            page_info,
+                        ) = await self._fetch_repo_prs_first_page(
+                            owner, repo_name
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error fetching PRs for repository {repo_full_name}: {e}"
+                        )
+                        raise
 
                     # Fetch additional pages if needed
                     if page_info.get("hasNextPage"):
                         end_cursor = page_info.get("endCursor")
-                        async for pr_node in self._iter_repo_prs_pages(
-                            owner, repo_name, end_cursor
-                        ):
-                            prs_nodes.append(pr_node)
+                        try:
+                            async for pr_node in self._iter_repo_prs_pages(
+                                owner, repo_name, end_cursor
+                            ):
+                                prs_nodes.append(pr_node)
+                        except Exception as e:
+                            self.logger.error(
+                                f"Error fetching additional PR pages for repository {repo_full_name}: {e}"
+                            )
+                            raise
 
                     # Analyze each PR for markdown/lint failures
                     blocked_count = 0
@@ -121,27 +135,37 @@ class PRScanner:
                                 pr_number, repo_full_name
                             )
 
-                        # Check if PR has failing markdown/lint checks
-                        failing_checks = self._extract_failing_checks(pr_node)
-                        has_markdown_lint_failures = any(
-                            self._is_markdown_or_lint_check(check_name)
-                            for check_name in failing_checks
-                        )
-
-                        if has_markdown_lint_failures:
-                            blocked_count += 1
-                            # Convert GraphQL PR node to REST API-like structure
-                            pr_data = self._graphql_pr_to_rest_format(
-                                pr_node, owner, repo_name
+                        try:
+                            # Check if PR has failing markdown/lint checks
+                            failing_checks = self._extract_failing_checks(
+                                pr_node
                             )
-                            results.append((owner, repo_name, pr_data))
+                            has_markdown_lint_failures = any(
+                                self._is_markdown_or_lint_check(check_name)
+                                for check_name in failing_checks
+                            )
+
+                            if has_markdown_lint_failures:
+                                blocked_count += 1
+                                # Convert GraphQL PR node to REST API-like structure
+                                pr_data = self._graphql_pr_to_rest_format(
+                                    pr_node, owner, repo_name
+                                )
+                                results.append((owner, repo_name, pr_data))
+                        except Exception as e:
+                            pr_num = pr_node.get("number", "unknown")
+                            self.logger.error(
+                                f"Error analyzing PR #{pr_num} in repository {repo_full_name}: {e}"
+                            )
+                            # Continue processing other PRs
+                            continue
 
                     if self.progress_tracker:
                         self.progress_tracker.complete_repository(blocked_count)
 
                 except Exception as e:
                     self.logger.error(
-                        f"Error scanning repository {repo_full_name}: {e}"
+                        f"Fatal error scanning repository {repo_full_name}: {e}"
                     )
                     if self.progress_tracker:
                         self.progress_tracker.add_error()
@@ -159,7 +183,9 @@ class PRScanner:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:
                 if isinstance(result, BaseException):
-                    self.logger.error(f"Error processing repository: {result}")
+                    self.logger.error(
+                        f"Unhandled error during repository processing: {result}"
+                    )
                     continue
                 # Yield each PR found
                 for owner, repo_name, pr_data in result:
