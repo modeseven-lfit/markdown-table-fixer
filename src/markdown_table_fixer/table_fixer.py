@@ -209,7 +209,7 @@ class FileFixer:
             if fix:
                 fixes.append(fix)
 
-        if not dry_run:
+        if not dry_run and fixes:
             # Apply fixes and add MD013 comments for all tables
             self._apply_fixes(fixes, tables)
 
