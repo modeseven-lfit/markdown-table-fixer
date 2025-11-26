@@ -138,7 +138,8 @@ test_auto_fix_enabled() {
     cp "$TEST_DIR/test_table.md" "$TEST_DIR/test_auto_fix.md"
 
     # Run with --auto-fix (default behavior)
-    markdown-table-fixer lint "$TEST_DIR/test_auto_fix.md" --auto-fix --quiet > /dev/null 2>&1
+    # Use --no-fail-on-error since auto-fix should exit with error when it makes changes
+    markdown-table-fixer lint "$TEST_DIR/test_auto_fix.md" --auto-fix --quiet --no-fail-on-error > /dev/null 2>&1
 
     # File should be modified
     if [ -f "$TEST_DIR/test_auto_fix.md" ]; then
@@ -157,8 +158,8 @@ test_no_auto_fix() {
     cp "$TEST_DIR/test_table.md" "$TEST_DIR/test_no_auto_fix.md"
     original_content=$(cat "$TEST_DIR/test_no_auto_fix.md")
 
-    # Run with --no-auto-fix
-    markdown-table-fixer lint "$TEST_DIR/test_no_auto_fix.md" --no-auto-fix --quiet > /dev/null 2>&1 || true
+    # Run with --no-auto-fix (allow failure since issues will be reported)
+    markdown-table-fixer lint "$TEST_DIR/test_no_auto_fix.md" --no-auto-fix --quiet --no-fail-on-error > /dev/null 2>&1 || true
 
     new_content=$(cat "$TEST_DIR/test_no_auto_fix.md")
 
@@ -179,7 +180,7 @@ test_fail_on_error_with_issues() {
 
     # Should exit with error code when issues found and not fixed
     set +e
-    markdown-table-fixer lint "$TEST_DIR/test_fail.md" --no-auto-fix --fail-on-error --quiet > /dev/null 2>&1
+    markdown-table-fixer lint "$TEST_DIR/test_fail.md" --no-auto-fix --quiet > /dev/null 2>&1
     exit_code=$?
     set -e
 
@@ -198,19 +199,19 @@ test_fail_on_error_after_fix() {
 
     cp "$TEST_DIR/test_table.md" "$TEST_DIR/test_fail_fixed.md"
 
-    # Should exit with success when issues are fixed
+    # Should exit with error when auto-fix makes changes (to force commit review)
     set +e
-    markdown-table-fixer lint "$TEST_DIR/test_fail_fixed.md" --auto-fix --fail-on-error --quiet > /dev/null 2>&1
+    markdown-table-fixer lint "$TEST_DIR/test_fail_fixed.md" --auto-fix --quiet > /dev/null 2>&1
     exit_code=$?
     set -e
 
-    if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}✅ PASS: Exit code zero when issues fixed with --fail-on-error${NC}\n"
+    if [ $exit_code -ne 0 ]; then
+        echo -e "${GREEN}✅ PASS: Exit code non-zero when auto-fix makes changes${NC}\n"
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        echo -e "${RED}❌ FAIL: Exit code zero when issues fixed with --fail-on-error${NC}\n"
+        echo -e "${RED}❌ FAIL: Exit code should be non-zero when auto-fix makes changes${NC}\n"
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        FAILED_TESTS+=("Exit code zero when issues fixed with --fail-on-error")
+        FAILED_TESTS+=("Exit code non-zero when auto-fix makes changes")
     fi
 }
 
