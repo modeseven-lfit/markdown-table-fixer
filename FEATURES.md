@@ -75,7 +75,7 @@ markdown-table-fixer lint [PATH] [OPTIONS]
 
 Options:
 
-- `--fix, -f`: Automatically fix issues
+- `--auto-fix`: Automatically fix issues
 - `--format`: Output format (text, json)
 - `--quiet, -q`: Suppress output except errors
 - `--check`: Exit with error if issues found (CI mode)

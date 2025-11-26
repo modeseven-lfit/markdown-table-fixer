@@ -74,9 +74,6 @@ class ProgressTracker:
         self.live: Live | None = None
         self.rich_available = RICH_AVAILABLE
         self.paused = False
-        # Metrics (optional; displayed when provided)
-        self.metrics_concurrency: int | None = None
-        self.metrics_rps: float | None = None
 
         # Fallback for when Rich is not available
         self._last_display = ""
@@ -128,14 +125,6 @@ class ProgressTracker:
                 if self.live:
                     self.live.start()
             self.paused = False
-
-    def update_metrics(self, concurrency: int, rps: float) -> None:
-        """Update concurrency and RPS metrics (no-op since metrics are not displayed)."""
-        pass
-
-    def clear_metrics(self) -> None:
-        """Clear the concurrency and RPS metrics (no-op since metrics are not displayed)."""
-        pass
 
     def update_total_repositories(self, total: int) -> None:
         """Update the total number of repositories to process."""
