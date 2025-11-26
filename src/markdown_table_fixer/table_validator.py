@@ -71,6 +71,7 @@ class TableValidator:
                             f"{len(column_widths)}"
                         ),
                         file_path=self.table.file_path,
+                        table_start_line=self.table.start_line,
                     )
                 )
                 continue
@@ -93,6 +94,7 @@ class TableValidator:
                                 f"column {expected}"
                             ),
                             file_path=self.table.file_path,
+                            table_start_line=self.table.start_line,
                         )
                     )
 
@@ -122,6 +124,7 @@ class TableValidator:
                                 "on left"
                             ),
                             file_path=self.table.file_path,
+                            table_start_line=self.table.start_line,
                         )
                     )
 
@@ -137,41 +140,13 @@ class TableValidator:
                                 "on right"
                             ),
                             file_path=self.table.file_path,
+                            table_start_line=self.table.start_line,
                         )
                     )
 
-                # Check for extra spaces (more than one space on each side)
-                if content.strip():
-                    left_spaces = len(content) - len(content.lstrip(" "))
-                    right_spaces = len(content) - len(content.rstrip(" "))
-
-                    if left_spaces > 1:
-                        violations.append(
-                            TableViolation(
-                                violation_type=ViolationType.EXTRA_SPACE_LEFT,
-                                line_number=row.line_number,
-                                column=cell.start_col,
-                                message=(
-                                    f"Cell in column {idx + 1} has {left_spaces} "
-                                    "spaces on left, expected 1"
-                                ),
-                                file_path=self.table.file_path,
-                            )
-                        )
-
-                    if right_spaces > 1:
-                        violations.append(
-                            TableViolation(
-                                violation_type=ViolationType.EXTRA_SPACE_RIGHT,
-                                line_number=row.line_number,
-                                column=cell.end_col,
-                                message=(
-                                    f"Cell in column {idx + 1} has {right_spaces} "
-                                    "spaces on right, expected 1"
-                                ),
-                                file_path=self.table.file_path,
-                            )
-                        )
+                # Note: We don't check for "extra" spaces beyond the minimum 1 space
+                # on each side, because padding is necessary for proper table alignment.
+                # Tables need extra spaces to align pipes vertically across rows.
 
         return violations
 
@@ -204,6 +179,7 @@ class TableValidator:
                         f"header has {len(header_row.cells)}"
                     ),
                     file_path=self.table.file_path,
+                    table_start_line=self.table.start_line,
                 )
             )
 

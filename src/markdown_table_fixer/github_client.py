@@ -6,13 +6,10 @@
 from __future__ import annotations
 
 import base64
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
 
 from .exceptions import FileAccessError
 
@@ -34,6 +31,14 @@ class GitHubClient:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+
+    async def __aenter__(self) -> GitHubClient:
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        """Async context manager exit."""
+        pass
 
     @retry(  # type: ignore[misc]
         stop=stop_after_attempt(3),
@@ -75,74 +80,82 @@ class GitHubClient:
                 msg = f"GitHub API error: {e.response.status_code} - {e.response.text}"
                 raise FileAccessError(msg) from e
             except httpx.RequestError as e:
-                msg = f"GitHub API request failed: {e}"
+                msg = f"Request failed: {e}"
                 raise FileAccessError(msg) from e
 
-    async def get_org_repos(
-        self, org: str, per_page: int = 100
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Get all repositories in an organization.
-
-        Args:
-            org: Organization name
-            per_page: Results per page
-
-        Yields:
-            Repository data
-        """
-        page = 1
-        while True:
-            repos = await self._request(
-                "GET",
-                f"/orgs/{org}/repos",
-                params={"per_page": per_page, "page": page, "type": "all"},
-            )
-            if not isinstance(repos, list) or not repos:
-                break
-
-            for repo in repos:
-                yield repo
-
-            if len(repos) < per_page:
-                break
-
-            page += 1
-
-    async def get_pull_requests(
+    @retry(  # type: ignore[misc]
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+    )
+    async def _graphql_request(
         self,
-        owner: str,
-        repo: str,
-        state: str = "open",
-        per_page: int = 100,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Get pull requests for a repository.
+        query: str,
+        variables: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make a GraphQL API request with retry logic.
 
         Args:
-            owner: Repository owner
-            repo: Repository name
-            state: PR state (open, closed, all)
-            per_page: Results per page
+            query: GraphQL query string
+            variables: Query variables
 
-        Yields:
-            Pull request data
+        Returns:
+            Response data
+
+        Raises:
+            FileAccessError: If request fails
         """
-        page = 1
-        while True:
-            prs = await self._request(
-                "GET",
-                f"/repos/{owner}/{repo}/pulls",
-                params={"state": state, "per_page": per_page, "page": page},
-            )
-            if not isinstance(prs, list) or not prs:
-                break
+        url = "https://api.github.com/graphql"
+        payload: dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
 
-            for pr in prs:
-                yield pr
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(
+                    url,
+                    headers=self.headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                json_response = response.json()
+                result: dict[str, Any] = (
+                    json_response if isinstance(json_response, dict) else {}
+                )
 
-            if len(prs) < per_page:
-                break
+                # Check for GraphQL errors
+                if "errors" in result:
+                    errors = result["errors"]
+                    msg = f"GraphQL errors: {errors}"
+                    raise FileAccessError(msg)
 
-            page += 1
+                data: dict[str, Any] = result.get("data", {})
+                return data
+            except httpx.HTTPStatusError as e:
+                msg = f"GitHub API error: {e.response.status_code} - {e.response.text}"
+                raise FileAccessError(msg) from e
+            except httpx.RequestError as e:
+                msg = f"Request failed: {e}"
+                raise FileAccessError(msg) from e
+
+    async def graphql(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute a GraphQL query.
+
+        Args:
+            query: GraphQL query string
+            variables: Query variables
+
+        Returns:
+            Response data
+
+        Raises:
+            FileAccessError: If request fails
+        """
+        result: dict[str, Any] = await self._graphql_request(query, variables)
+        return result
 
     async def get_pr_files(
         self, owner: str, repo: str, pr_number: int
@@ -162,25 +175,6 @@ class GitHubClient:
             f"/repos/{owner}/{repo}/pulls/{pr_number}/files",
         )
         return files if isinstance(files, list) else []
-
-    async def get_pr_checks(
-        self, owner: str, repo: str, ref: str
-    ) -> dict[str, Any]:
-        """Get check runs for a PR ref.
-
-        Args:
-            owner: Repository owner
-            repo: Repository name
-            ref: Git ref (branch/commit SHA)
-
-        Returns:
-            Check runs data
-        """
-        result = await self._request(
-            "GET",
-            f"/repos/{owner}/{repo}/commits/{ref}/check-runs",
-        )
-        return result if isinstance(result, dict) else {}
 
     async def get_file_content(
         self, owner: str, repo: str, path: str, ref: str

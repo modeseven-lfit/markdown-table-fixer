@@ -101,6 +101,7 @@ class TableViolation:
     column: int
     message: str
     file_path: Path
+    table_start_line: int = 0  # Line where the table starts
 
 
 @dataclass

@@ -6,17 +6,17 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
 from pathlib import Path
-import sys
-from typing import Any
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.table import Table
 import typer
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from ._version import __version__
 from .exceptions import (
@@ -24,9 +24,17 @@ from .exceptions import (
     TableParseError,
 )
 from .github_client import GitHubClient
-from .models import FileResult, OutputFormat, ScanResult
+from .models import (
+    BlockedPR,
+    FileResult,
+    OutputFormat,
+    PRInfo,
+    ScanResult,
+    TableViolation,
+)
 from .pr_fixer import PRFixer
 from .pr_scanner import PRScanner
+from .progress_tracker import ProgressTracker
 from .table_fixer import FileFixer
 from .table_parser import MarkdownFileScanner, TableParser
 from .table_validator import TableValidator
@@ -38,29 +46,54 @@ def version_callback(value: bool) -> None:
     """Show version and exit."""
     if value:
         console.print(f"🏷️  markdown-table-fixer version {__version__}")
+        console.print()
         raise typer.Exit()
 
 
-class CustomTyper(typer.Typer):  # type: ignore[misc]
-    """Custom Typer class that shows version in help."""
+def setup_logging(
+    log_level: str = "INFO", quiet: bool = False, verbose: bool = False
+) -> None:
+    """Configure logging with Rich handler."""
+    if quiet:
+        log_level = "ERROR"
+    elif verbose:
+        log_level = "DEBUG"
 
-    def __call__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        # Check if help is being requested
-        if "--help" in sys.argv or "-h" in sys.argv:
-            console.print(f"🏷️  markdown-table-fixer version {__version__}\n")
-        return super().__call__(*args, **kwargs)
+    logging.basicConfig(
+        level=log_level,
+        format="%(message)s",
+        handlers=[
+            RichHandler(console=console, show_time=False, show_path=False)
+        ],
+    )
+
+    # Silence httpx INFO logs to prevent Rich display interruption
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-app = CustomTyper(
+# Create Typer app with version in help
+app = typer.Typer(
     name="markdown-table-fixer",
-    help="Markdown table formatter and linter with GitHub integration",
+    help=f"markdown-table-fixer version {__version__}\n\nFix markdown table formatting issues",
     add_completion=False,
     rich_markup_mode="rich",
 )
 
 
+# Update command docstrings with version at module load time
+def _add_version_to_docstring(
+    cmd_func: Callable[..., None],
+) -> Callable[..., None]:
+    """Add version info to command docstring."""
+    if cmd_func.__doc__:
+        cmd_func.__doc__ = (
+            f"markdown-table-fixer version {__version__}\n\n" + cmd_func.__doc__
+        )
+    return cmd_func
+
+
 @app.callback()  # type: ignore[misc]
-def main_callback(
+def main(
     version: bool = typer.Option(
         False,
         "--version",
@@ -73,183 +106,130 @@ def main_callback(
     pass
 
 
-def setup_logging(
-    log_level: str = "INFO", quiet: bool = False, verbose: bool = False
-) -> None:
-    """Setup logging configuration.
-
-    Args:
-        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        quiet: Suppress all output except errors
-        verbose: Enable verbose output
-    """
-    # Determine level from flags and option
-    if quiet:
-        level = logging.ERROR
-    elif verbose:
-        level = logging.DEBUG
-    else:
-        level = getattr(logging, log_level.upper(), logging.INFO)
-
-    # Get root logger and set its level
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
-
-    # Clear existing handlers
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-
-    # Add our handler
-    rich_handler = RichHandler(
-        console=console,
-        show_time=False,
-        show_path=False,
-        markup=True,
-    )
-    rich_handler.setLevel(level)
-    rich_handler.setFormatter(logging.Formatter("%(message)s"))
-    root_logger.addHandler(rich_handler)
-
-
 @app.command()  # type: ignore[misc]
+@_add_version_to_docstring  # type: ignore[misc]
 def lint(
     path: Path = typer.Argument(
         Path("."),
         help="Path to scan for markdown files",
         exists=True,
     ),
-    auto_fix: bool = typer.Option(
-        True,
-        "--auto-fix/--no-auto-fix",
-        help="Automatically fix issues found (default: enabled)",
-    ),
-    fail_on_error: bool = typer.Option(
-        True,
-        "--fail-on-error/--no-fail-on-error",
-        help="Exit with error code if validation failures found",
-    ),
-    parallel: bool = typer.Option(
-        True,
-        "--parallel/--no-parallel",
-        help="Enable parallel processing (default: enabled)",
-    ),
-    workers: int = typer.Option(
-        4,
-        "--workers",
-        "-j",
-        min=1,
-        max=32,
-        help="Number of parallel workers (default: 4)",
-    ),
-    output_format: str = typer.Option(
-        "text",
-        "--format",
-        "-f",
-        help="Output format (text, json) [default: text]",
-    ),
-    verbose: bool = typer.Option(
+    fix: bool = typer.Option(
         False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output",
+        "--fix",
+        "-f",
+        help="Automatically fix issues found",
+    ),
+    output_format: OutputFormat = typer.Option(
+        OutputFormat.TEXT,
+        "--format",
+        help="Output format: text, json",
+        case_sensitive=False,
     ),
     quiet: bool = typer.Option(
         False,
         "--quiet",
         "-q",
-        help="Suppress all output except errors",
+        help="Suppress output except errors",
     ),
-    log_level: str = typer.Option(
-        "INFO",
-        "--log-level",
-        help="Set logging level [default: INFO]",
-        case_sensitive=False,
-    ),
-    max_line_length: int = typer.Option(
-        80,
-        "--max-line-length",
-        "-l",
-        help="Maximum line length before adding markdownlint MD013 disable",
+    check: bool = typer.Option(
+        False,
+        "--check",
+        help="Exit with error if issues found (CI mode)",
     ),
     _version: bool = typer.Option(
         False,
         "--version",
+        help="Show version and exit",
         callback=version_callback,
         is_eager=True,
-        help="Show version and exit",
+    ),
+    max_line_length: int = typer.Option(
+        80,
+        "--max-line-length",
+        help="Maximum line length before adding MD013 disable comments",
+    ),
+    path_arg: Path | None = typer.Option(
+        None,
+        "--path",
+        "-p",
+        help="Path to scan (alternative to positional argument)",
+        exists=True,
+    ),
+    auto_fix: bool = typer.Option(
+        False,
+        "--auto-fix/--no-auto-fix",
+        help="Automatically fix issues found (default: disabled)",
+    ),
+    fail_on_error: bool = typer.Option(
+        True,
+        "--fail-on-error/--no-fail-on-error",
+        help="Exit with error if issues found (default: enabled)",
     ),
 ) -> None:
-    """Scan markdown files for table formatting issues.
+    """Scan and optionally fix markdown table formatting issues.
 
-    Scans the specified path (file or directory) for markdown files
-    containing tables with formatting issues. Can automatically fix
-    issues or just report them.
+    By default, scans the current directory and reports issues without fixing.
+    Use --fix to automatically fix issues found.
+
+    Examples:
+      markdown-table-fixer lint                    # Scan current directory
+      markdown-table-fixer lint --fix              # Scan and fix issues
+      markdown-table-fixer lint /path/to/docs      # Scan specific path
+      markdown-table-fixer lint --check            # CI mode: fail if issues found
     """
-    setup_logging(log_level=log_level, quiet=quiet, verbose=verbose)
+    # Use path_arg if provided, otherwise use positional path
+    scan_path = path_arg if path_arg else path
+
+    # Auto-fix takes precedence over fix flag
+    should_fix = auto_fix or fix
+
+    # Don't print status messages in JSON mode or when quiet
+    if not quiet and output_format != OutputFormat.JSON:
+        console.print(f"🔍 Scanning: {scan_path}")
+        if should_fix:
+            console.print("🔧 Auto-fix enabled")
+        console.print()
 
     try:
-        fmt = OutputFormat(output_format.lower())
-    except ValueError as err:
-        console.print(
-            f"[red]Error:[/red] Invalid format '{output_format}'. "
-            "Use 'text' or 'json'"
-        )
-        raise typer.Exit(1) from err
+        scanner = MarkdownFileScanner(scan_path)
+        markdown_files = scanner.find_markdown_files()
 
-    # Find markdown files
-    scanner = MarkdownFileScanner(path)
-    markdown_files = scanner.find_markdown_files()
+        if not markdown_files:
+            if not quiet:
+                console.print(
+                    f"[yellow]No markdown files found in {scan_path}[/yellow]"
+                )
+            return
 
-    if not markdown_files:
-        if not quiet:
-            console.print(f"No markdown files found in {path}")
-        raise typer.Exit(0)
+        # Process files
+        results = []
+        for md_file in markdown_files:
+            result = _process_file(md_file, should_fix, max_line_length)
+            results.append(result)
 
-    if not quiet and fmt != OutputFormat.JSON:
-        console.print(f"🔍 Scanning {len(markdown_files)} markdown file(s)...")
+        # Create scan result
+        scan_result = ScanResult()
+        for result in results:
+            scan_result.add_file_result(result)
 
-    # Scan and optionally fix files
-    scan_result = ScanResult()
-
-    if parallel and len(markdown_files) > 1:
-        # Process files in parallel using thread pool
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_to_file = {
-                executor.submit(
-                    _process_file, file_path, auto_fix, max_line_length
-                ): file_path
-                for file_path in markdown_files
-            }
-
-            for future in as_completed(future_to_file):
-                file_result = future.result()
-                scan_result.add_file_result(file_result)
-    else:
-        # Process files sequentially
-        for file_path in markdown_files:
-            file_result = _process_file(file_path, auto_fix, max_line_length)
-            scan_result.add_file_result(file_result)
-
-    # Output results
-    if fmt == OutputFormat.JSON:
-        _output_json_results(scan_result)
-    else:
-        _output_text_results(scan_result, quiet)
-
-    # Exit with appropriate code
-    if fail_on_error and scan_result.files_with_issues > 0:
-        if (
-            auto_fix
-            and scan_result.files_fixed == scan_result.files_with_issues
-        ):
-            # All issues were fixed, exit success
-            raise typer.Exit(0)
+        # Output results
+        if output_format == OutputFormat.JSON:
+            _output_json_results(scan_result)
         else:
-            # Issues remain unfixed
+            _output_text_results(scan_result, quiet)
+
+        # Exit with error if issues found and check mode
+        if (check or fail_on_error) and scan_result.files_with_issues > 0:
             raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1) from e
 
 
 @app.command()  # type: ignore[misc]
+@_add_version_to_docstring  # type: ignore[misc]
 def github(
     target: str = typer.Argument(
         ...,
@@ -262,10 +242,17 @@ def github(
         help="GitHub token (or set GITHUB_TOKEN env var)",
         envvar="GITHUB_TOKEN",
     ),
-    auto_fix: bool = typer.Option(
-        True,
-        "--auto-fix/--no-auto-fix",
-        help="Automatically fix issues found (default: enabled)",
+    sync_strategy: str = typer.Option(
+        "none",
+        "--sync-strategy",
+        help="How to sync PR with base branch: 'rebase', 'merge', or 'none' (default: none)",
+        case_sensitive=False,
+    ),
+    conflict_strategy: str = typer.Option(
+        "fail",
+        "--conflict-strategy",
+        help="How to resolve conflicts: 'fail', 'ours' (keep PR changes), or 'theirs' (keep base changes)",
+        case_sensitive=False,
     ),
     dry_run: bool = typer.Option(
         False,
@@ -277,7 +264,12 @@ def github(
         "--include-drafts",
         help="Include draft PRs in scan",
     ),
-    workers: int = typer.Option(
+    debug_org: bool = typer.Option(
+        False,
+        "--debug-org",
+        help="Debug mode: only process first PR found (useful for testing org scans)",
+    ),
+    _workers: int = typer.Option(
         4,
         "--workers",
         "-j",
@@ -300,15 +292,14 @@ def github(
     log_level: str = typer.Option(
         "INFO",
         "--log-level",
-        help="Set logging level [default: INFO]",
-        case_sensitive=False,
+        help="Set logging level",
     ),
     _version: bool = typer.Option(
         False,
         "--version",
+        help="Show version and exit",
         callback=version_callback,
         is_eager=True,
-        help="Show version and exit",
     ),
 ) -> None:
     """Fix markdown tables in GitHub PRs.
@@ -317,27 +308,56 @@ def github(
     - An entire organization (scans all PRs for table issues)
     - A specific PR by URL
 
+    Sync strategies:
+    - 'none': Fix tables on PR branch as-is (may have conflicts)
+    - 'rebase': Rebase PR onto base branch before fixing (cleaner history)
+    - 'merge': Merge base branch into PR before fixing (safer)
+
+    Conflict resolution strategies (when sync causes conflicts):
+    - 'fail': Abort if conflicts occur (default, safest)
+    - 'ours': Keep PR changes, discard conflicting base changes
+    - 'theirs': Keep base changes, discard conflicting PR changes
+
     Examples:
       markdown-table-fixer github myorg --token ghp_xxx
       markdown-table-fixer github https://github.com/owner/repo/pull/123
+      markdown-table-fixer github https://github.com/owner/repo/pull/123 --sync-strategy rebase
+      markdown-table-fixer github https://github.com/owner/repo/pull/123 --sync-strategy merge --conflict-strategy ours
     """
     setup_logging(log_level=log_level, quiet=quiet, verbose=verbose)
+
+    # Validate sync strategy
+    if sync_strategy.lower() not in ["none", "rebase", "merge"]:
+        console.print(
+            f"[red]Error:[/red] Invalid sync strategy '{sync_strategy}'. "
+            "Use 'none', 'rebase', or 'merge'"
+        )
+        raise typer.Exit(1)
+
+    # Validate conflict strategy
+    if conflict_strategy.lower() not in ["fail", "ours", "theirs"]:
+        console.print(
+            f"[red]Error:[/red] Invalid conflict strategy '{conflict_strategy}'. "
+            "Use 'fail', 'ours', or 'theirs'"
+        )
+        raise typer.Exit(1)
 
     if not token:
         console.print(
             "[red]Error:[/red] GitHub token required. "
-            "Set GITHUB_TOKEN env var or use --token"
+            "Provide --token or set GITHUB_TOKEN environment variable"
         )
         raise typer.Exit(1)
 
-    # Detect if target is a PR URL or organization
-    if "github.com" in target and "/pull/" in target:
-        # Process single PR
+    # Check if target is a PR URL or organization name
+    if "/pull/" in target or "/pulls/" in target:
+        # Single PR
         asyncio.run(
             _fix_single_pr(
                 target,
                 token,
-                auto_fix=auto_fix,
+                sync_strategy=sync_strategy.lower(),
+                conflict_strategy=conflict_strategy.lower(),
                 dry_run=dry_run,
                 quiet=quiet,
             )
@@ -348,10 +368,11 @@ def github(
             _scan_organization(
                 target,
                 token,
-                auto_fix=auto_fix,
+                sync_strategy=sync_strategy.lower(),
+                conflict_strategy=conflict_strategy.lower(),
                 dry_run=dry_run,
                 include_drafts=include_drafts,
-                workers=workers,
+                debug_org=debug_org,
                 quiet=quiet,
             )
         )
@@ -360,37 +381,35 @@ def github(
 async def _fix_single_pr(
     pr_url: str,
     token: str,
-    auto_fix: bool = True,
+    sync_strategy: str = "none",
+    conflict_strategy: str = "fail",
     dry_run: bool = False,
     quiet: bool = False,
 ) -> None:
-    """Fix a single PR by URL."""
+    """Fix markdown tables in a single PR."""
     if not quiet:
-        console.print(f"🔍 Analyzing PR: {pr_url}")
+        console.print(f"🔍 Processing PR: {pr_url}")
 
     try:
         async with GitHubClient(token) as client:  # type: ignore[attr-defined]
             fixer = PRFixer(client)
             result = await fixer.fix_pr_by_url(  # type: ignore[attr-defined]
-                pr_url, dry_run=dry_run or not auto_fix
+                pr_url,
+                sync_strategy=sync_strategy,
+                conflict_strategy=conflict_strategy,
+                dry_run=dry_run,
             )
 
             if result.success:
-                if dry_run:
-                    console.print(
-                        f"\n[yellow]Would fix {len(result.files_modified)} file(s) in PR[/yellow]"
-                    )
-                elif auto_fix:
-                    console.print(
-                        f"\n[green]✅ Fixed {len(result.files_modified)} file(s) in PR[/green]"
-                    )
-                else:
-                    console.print(
-                        f"\n[yellow]Found issues in {len(result.files_modified)} file(s)[/yellow]"
-                    )
-            else:
-                console.print(f"\n[red]Error:[/red] {result.message}")
-                raise typer.Exit(1)
+                if not quiet:
+                    console.print(f"[green]✅ {result.message}[/green]")
+                    if result.files_modified:
+                        for file in result.files_modified:
+                            console.print(f"     - {file}")
+            elif not quiet:
+                console.print(f"[yellow]⚠️  {result.message}[/yellow]")
+                if result.error:
+                    console.print(f"   Error: {result.error}")
 
     except Exception as e:
         console.print(f"[red]Error processing PR:[/red] {e}")
@@ -400,10 +419,11 @@ async def _fix_single_pr(
 async def _scan_organization(
     org: str,
     token: str,
-    auto_fix: bool = True,
+    sync_strategy: str = "none",
+    conflict_strategy: str = "fail",
     dry_run: bool = False,
     include_drafts: bool = False,
-    workers: int = 4,
+    debug_org: bool = False,
     quiet: bool = False,
 ) -> None:
     """Scan organization for PRs with markdown table issues."""
@@ -416,57 +436,155 @@ async def _scan_organization(
 
     try:
         async with GitHubClient(token) as client:  # type: ignore[attr-defined]
-            scanner = PRScanner(client)
-            scan_result = await scanner.scan_organization(  # type: ignore[misc]
-                org, include_drafts=include_drafts
+            # Create progress tracker for visual feedback
+            progress_tracker = (
+                None if quiet else ProgressTracker(org, show_pr_stats=True)
             )
+
+            scanner = PRScanner(client, progress_tracker=progress_tracker)
+            fixer = PRFixer(client)
+
+            # Collect PRs from async generator
+            prs_to_process = []
+
+            if progress_tracker:
+                progress_tracker.start()
+
+            # Scanner yields only PRs that are blocked by markdown/lint check failures
+            # (it counts repos internally using GraphQL)
+            try:
+                async for (
+                    owner,
+                    repo_name,
+                    pr_data,
+                ) in scanner.scan_organization(
+                    org, include_drafts=include_drafts
+                ):
+                    pr_info = PRInfo(
+                        number=pr_data.get("number", 0),
+                        title=pr_data.get("title", ""),
+                        repository=f"{owner}/{repo_name}",
+                        url=pr_data.get("html_url", ""),
+                        author=pr_data.get("user", {}).get("login", ""),
+                        is_draft=pr_data.get("draft", False),
+                        head_ref=pr_data.get("head", {}).get("ref", ""),
+                        head_sha=pr_data.get("head", {}).get("sha", ""),
+                        base_ref=pr_data.get("base", {}).get("ref", ""),
+                        mergeable=pr_data.get("mergeable_state", ""),
+                        merge_state_status=pr_data.get(
+                            "merge_state_status", ""
+                        ),
+                    )
+
+                    blocked_pr = BlockedPR(
+                        pr_info=pr_info,
+                        blocking_reasons=["Failing markdown/lint checks"],
+                        has_markdown_issues=True,  # Will be verified when we try to fix
+                    )
+
+                    prs_to_process.append(blocked_pr)
+            except Exception as scan_error:
+                # Stop progress tracker on error
+                if progress_tracker:
+                    progress_tracker.stop()
+                console.print(
+                    f"\n[yellow]⚠️  Scanning interrupted: {scan_error}[/yellow]"
+                )
+                console.print("[yellow]Processing PRs found so far...[/yellow]")
+
+            # Stop progress tracker
+            if progress_tracker:
+                progress_tracker.stop()
 
             if not quiet:
                 console.print(
-                    f"\n📊 Found {scan_result.total_prs} PRs in {scan_result.repositories_scanned} repositories"
-                )
-                console.print(
-                    f"   {len(scan_result.blocked_prs)} PRs with markdown table issues"
+                    f"\n📊 Found {len(prs_to_process)} blocked PRs with potential markdown issues"
                 )
 
-            if not scan_result.blocked_prs:
+            if not prs_to_process:
                 console.print(
-                    "\n[green]✅ No markdown table issues found![/green]"
+                    "\n[green]✅ No blocked PRs with markdown table issues found![/green]"
                 )
                 return
 
-            # Fix PRs if requested
-            if auto_fix and not dry_run:
-                if not quiet:
+            # Display PRs
+            if not quiet:
+                console.print(
+                    "\n🔍 Blocked PRs with potential markdown issues:"
+                )
+                for blocked_pr in prs_to_process:
                     console.print(
-                        f"\n🔧 Fixing {len(scan_result.blocked_prs)} PRs..."
+                        f"   • {blocked_pr.pr_info.repository}#{blocked_pr.pr_info.number}: {blocked_pr.pr_info.title}"
                     )
 
-                fixer = PRFixer(client)
-                prs_fixed = 0
+            # Debug mode: limit to first PR only
+            if debug_org and prs_to_process:
+                if not quiet:
+                    console.print(
+                        "\n[yellow]🐛 GitHub Organisation DEBUG mode: only processing first pull request[/yellow]"
+                    )
+                prs_to_process = prs_to_process[:1]
+            elif not quiet:
+                # Only show this message if NOT in debug mode
+                if dry_run:
+                    console.print(
+                        f"\n🔍 [DRY RUN] Would fix {len(prs_to_process)} PRs (no changes will be made)..."
+                    )
+                else:
+                    console.print(f"\n🔧 Fixing {len(prs_to_process)} PRs...")
 
-                # Process PRs in parallel
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    futures = []
-                    for blocked_pr in scan_result.blocked_prs:
-                        if blocked_pr.has_markdown_issues:
-                            future = executor.submit(
-                                asyncio.run,
-                                fixer.fix_pr(  # type: ignore[attr-defined]
-                                    blocked_pr.pr_info, dry_run=dry_run
-                                ),
-                            )
-                            futures.append(future)
+            prs_fixed = 0
+            prs_with_issues = 0
+            fixed_pr_urls = []
 
-                    for future in as_completed(futures):
-                        result = future.result()
-                        if result.success:
+            # Process PRs sequentially to avoid overwhelming the system
+            for blocked_pr in prs_to_process:
+                try:
+                    if not quiet:
+                        console.print(
+                            f"\n🔄 Processing: {blocked_pr.pr_info.repository}#{blocked_pr.pr_info.number}"
+                        )
+
+                    result = await fixer.fix_pr_by_url(
+                        blocked_pr.pr_info.url,
+                        sync_strategy=sync_strategy,
+                        conflict_strategy=conflict_strategy,
+                        dry_run=dry_run,
+                    )
+
+                    if result.success:
+                        if len(result.files_modified) > 0:
                             prs_fixed += 1
+                            fixed_pr_urls.append(blocked_pr.pr_info.url)
+                        if not quiet:
+                            console.print(f"[green]✅ {result.message}[/green]")
+                    elif not quiet:
+                        console.print(f"[yellow]⚠️  {result.message}[/yellow]")
 
-                console.print(f"\n[green]✅ Fixed {prs_fixed} PR(s)[/green]")
+                    if len(result.files_modified) > 0:
+                        prs_with_issues += 1
+
+                except Exception as e:
+                    if not quiet:
+                        console.print(f"[red]❌ Error: {e}[/red]")
+
+            if dry_run:
+                console.print(
+                    f"\n[green]✅ [DRY RUN] Found issues in {prs_with_issues} PR(s) (no changes made)[/green]"
+                )
+            elif prs_fixed > 0:
+                console.print(f"\n[green]✅ Fixed {prs_fixed} PR(s):[/green]")
+                for pr_url in fixed_pr_urls:
+                    console.print(f"   • {pr_url}")
+            else:
+                console.print("\n[green]✅ No PRs needed fixing[/green]")
 
     except Exception as e:
         console.print(f"[red]Error scanning organization:[/red] {e}")
+        if not quiet:
+            import traceback
+
+            console.print("[dim]" + traceback.format_exc() + "[/dim]")
         raise typer.Exit(1) from e
 
 
@@ -499,136 +617,99 @@ def _process_file(
             result.violations.extend(violations)
 
         # Fix if requested
+        # Always run fixer if fix=True to add MD013 comments even when no violations
         if fix:
             fixer = FileFixer(file_path, max_line_length=max_line_length)
-            fixes = fixer.fix_file(tables, dry_run=False)
-            result.fixes_applied = fixes
+            fixes = fixer.fix_file(tables)
+            result.fixes_applied.extend(fixes)
 
-    except TableParseError as e:
-        result.error = f"Parse error: {e}"
-    except FileAccessError as e:
-        result.error = f"Access error: {e}"
-    except Exception as e:
-        result.error = f"Unexpected error: {e}"
+    except (FileAccessError, TableParseError) as e:
+        result.error = str(e)
 
     return result
 
 
-def _output_text_results(result: ScanResult, quiet: bool) -> None:
-    """Output results in text format.
-
-    Args:
-        result: Scan results
-        quiet: Whether to minimize output
-    """
-    if quiet:
-        if result.files_with_issues > 0:
-            console.print(f"Found issues in {result.files_with_issues} file(s)")
-        return
-
-    console.print("\n" + "=" * 70)
-    console.print("📊 Scan Results")
-    console.print("=" * 70)
-
-    # Summary table
-    summary_table = Table(title="Summary", show_header=True)
-    summary_table.add_column("Metric", style="cyan")
-    summary_table.add_column("Count", style="magenta")
-
-    summary_table.add_row("Files scanned", str(result.files_scanned))
-    summary_table.add_row("Files with issues", str(result.files_with_issues))
-    summary_table.add_row("Total violations", str(result.total_violations))
-
-    if result.files_fixed > 0:
-        summary_table.add_row("Files fixed", str(result.files_fixed))
-        summary_table.add_row("Fixes applied", str(result.total_fixes))
-
-    console.print(summary_table)
-
-    # Files with issues
-    if result.files_with_issues > 0:
-        files_table = Table(title="Files with Issues", show_header=True)
-        files_table.add_column("File", style="cyan")
-        files_table.add_column("Tables", style="magenta")
-        files_table.add_column("Violations", style="yellow")
-        files_table.add_column("Status", style="green")
-
-        for file_result in result.file_results:
-            if file_result.has_violations or file_result.error:
-                status = (
-                    "✅ Fixed"
-                    if file_result.was_fixed
-                    else ("❌ Error" if file_result.error else "⚠️  Issues")
-                )
-                files_table.add_row(
-                    str(file_result.file_path.name),
-                    str(file_result.tables_found),
-                    str(len(file_result.violations)),
-                    status,
-                )
-
-        console.print(files_table)
-
-        # Show detailed violations for first few files
-        console.print("\n📋 Detailed Violations:\n")
-        for file_result in result.file_results[:3]:
-            if file_result.has_violations:
-                console.print(f"{file_result.file_path}")
-                for _i, violation in enumerate(file_result.violations[:5]):
-                    console.print(f"  {violation.message}")
-                if len(file_result.violations) > 5:
-                    console.print(
-                        f"  ... and {len(file_result.violations) - 5} more violations"
-                    )
-                console.print()
-
-    # Final message
-    if result.files_fixed > 0:
-        console.print(f"✅ Fixed {result.files_fixed} file(s)!")
-    elif result.files_with_issues > 0:
-        console.print("⚠️  Run with --auto-fix to automatically fix issues")
-    else:
-        console.print("✅ No issues found!")
-
-
 def _output_json_results(result: ScanResult) -> None:
-    """Output results in JSON format.
-
-    Args:
-        result: Scan results
-    """
-    output: dict[str, Any] = {
+    """Output results in JSON format."""
+    output = {
         "files_scanned": result.files_scanned,
         "files_with_issues": result.files_with_issues,
         "files_fixed": result.files_fixed,
         "total_violations": result.total_violations,
         "total_fixes": result.total_fixes,
-        "files": [],
+        "files": [
+            {
+                "path": str(fr.file_path),
+                "tables_found": fr.tables_found,
+                "violations": len(fr.violations),
+                "fixes_applied": len(fr.fixes_applied),
+                "error": fr.error,
+            }
+            for fr in result.file_results
+        ],
     }
-
-    for file_result in result.file_results:
-        file_data: dict[str, Any] = {
-            "path": str(file_result.file_path),
-            "tables_found": file_result.tables_found,
-            "violations": len(file_result.violations),
-            "fixes_applied": len(file_result.fixes_applied),
-            "error": file_result.error,
-        }
-
-        if file_result.violations:
-            file_data["violation_details"] = [
-                {
-                    "type": v.violation_type.value,
-                    "line": v.line_number,
-                    "column": v.column,
-                    "message": v.message,
-                }
-                for v in file_result.violations
-            ]
-
-        output["files"].append(file_data)
-
     console.print(json.dumps(output, indent=2))
+
+
+def _output_text_results(result: ScanResult, quiet: bool) -> None:
+    """Output results in text format."""
+    if quiet:
+        return
+
+    if result.files_with_issues == 0:
+        console.print("[green]✅ No issues found![/green]")
+        return
+
+    # Summary
+    console.print("\n[bold]Summary:[/bold]")
+    console.print(f"  Files scanned: {result.files_scanned}")
+    console.print(f"  Files with issues: {result.files_with_issues}")
+    if result.files_fixed > 0:
+        console.print(f"  Files fixed: {result.files_fixed}")
+    console.print(f"  Total violations: {result.total_violations}")
+    if result.total_fixes > 0:
+        console.print(f"  Total fixes: {result.total_fixes}")
+    console.print()
+
+    # Show errors
+    if result.errors:
+        console.print("[bold red]Errors:[/bold red]")
+        for error in result.errors[:5]:
+            console.print(f"  {error}")
+        if len(result.errors) > 5:
+            console.print(f"  ... and {len(result.errors) - 5} more errors")
+        console.print()
+
+    # Show sample violations
+    if result.files_with_issues > 0:
+        console.print("[bold yellow]Files with issues:[/bold yellow]")
+        for file_result in result.file_results[:3]:
+            if file_result.has_violations:
+                console.print(f"{file_result.file_path}")
+
+                # Group violations by table
+                violations_by_table: dict[int, list[TableViolation]] = {}
+                for violation in file_result.violations:
+                    table_line = violation.table_start_line
+                    if table_line not in violations_by_table:
+                        violations_by_table[table_line] = []
+                    violations_by_table[table_line].append(violation)
+
+                # Show summary per table
+                for table_line in sorted(violations_by_table.keys()):
+                    violations = violations_by_table[table_line]
+                    # Count unique rows with violations
+                    unique_rows = len({v.line_number for v in violations})
+                    console.print(
+                        f"  Markdown table at line {table_line} has {unique_rows} "
+                        f"row(s) with formatting issues"
+                    )
+                console.print()
+
+        if result.files_with_issues > 3:
+            console.print(
+                f"... and {result.files_with_issues - 3} more files with issues"
+            )
 
 
 if __name__ == "__main__":

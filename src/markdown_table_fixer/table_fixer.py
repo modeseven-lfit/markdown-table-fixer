@@ -211,6 +211,7 @@ class FileFixer:
 
         if not dry_run:
             # Apply fixes and add MD013 comments for all tables
+            # (even if no fixes, we may still need MD013 comments)
             self._apply_fixes(fixes, tables)
 
         return fixes
@@ -231,7 +232,7 @@ class FileFixer:
         # Build a map of all tables that need MD013 comments
         tables_needing_md013: dict[int, tuple[MarkdownTable, list[str]]] = {}
 
-        # Check all tables for line length violations
+        # Check all tables for line length violations (not just fixed ones)
         for table in all_tables:
             # Get the table content (either fixed or original)
             table_lines = []
@@ -281,6 +282,10 @@ class FileFixer:
                 )
 
         # Apply all modifications in reverse order to maintain line numbers
+        # (only if there are modifications to apply)
+        if not all_modifications:
+            return
+
         for start_line, end_line, content_lines, needs_md013 in sorted(
             all_modifications, key=lambda x: x[0], reverse=True
         ):
@@ -327,15 +332,9 @@ class FileFixer:
 
                 # Add enable comment if not present
                 if not has_enable:
-                    # Check if there's content after the table
-                    if end_idx < len(lines) and lines[end_idx].strip():
-                        # Content exists, add blank line before and after comment
-                        new_lines.append("\n")
-                        new_lines.append("<!-- markdownlint-enable MD013 -->\n")
-                    else:
-                        # No content or blank line, just add comment
-                        new_lines.append("\n")
-                        new_lines.append("<!-- markdownlint-enable MD013 -->\n")
+                    # Always add blank line and enable comment
+                    new_lines.append("\n")
+                    new_lines.append("<!-- markdownlint-enable MD013 -->\n")
 
             # Replace the section
             lines[start_idx:end_idx] = new_lines
