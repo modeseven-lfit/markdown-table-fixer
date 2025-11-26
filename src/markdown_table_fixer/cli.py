@@ -184,7 +184,8 @@ def lint(
     # Auto-fix takes precedence over fix flag
     should_fix = auto_fix or fix
 
-    if not quiet:
+    # Don't print status messages in JSON mode or when quiet
+    if not quiet and output_format != OutputFormat.JSON:
         console.print(f"🔍 Scanning: {scan_path}")
         if should_fix:
             console.print("🔧 Auto-fix enabled")
@@ -616,7 +617,8 @@ def _process_file(
             result.violations.extend(violations)
 
         # Fix if requested
-        if fix and result.violations:
+        # Always run fixer if fix=True to add MD013 comments even when no violations
+        if fix:
             fixer = FileFixer(file_path, max_line_length=max_line_length)
             fixes = fixer.fix_file(tables)
             result.fixes_applied.extend(fixes)
