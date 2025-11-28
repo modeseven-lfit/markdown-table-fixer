@@ -9,20 +9,17 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.logging import RichHandler
 import typer
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 from ._version import __version__
 from .exceptions import (
     FileAccessError,
     TableParseError,
 )
+from .git_config import GitConfigMode
 from .github_client import GitHubClient
 from .models import (
     BlockedPR,
@@ -80,18 +77,6 @@ app = typer.Typer(
 )
 
 
-# Update command docstrings with version at module load time
-def _add_version_to_docstring(
-    cmd_func: Callable[..., None],
-) -> Callable[..., None]:
-    """Add version info to command docstring."""
-    if cmd_func.__doc__:
-        cmd_func.__doc__ = (
-            f"markdown-table-fixer version {__version__}\n\n" + cmd_func.__doc__
-        )
-    return cmd_func
-
-
 @app.callback()  # type: ignore[misc]
 def main(
     version: bool = typer.Option(
@@ -106,8 +91,7 @@ def main(
     pass
 
 
-@app.command()  # type: ignore[misc]
-@_add_version_to_docstring  # type: ignore[misc]
+@app.command(help="Scan and optionally fix markdown table formatting issues")  # type: ignore[misc]
 def lint(
     path: Path = typer.Argument(
         Path("."),
@@ -130,13 +114,6 @@ def lint(
         False,
         "--check",
         help="Exit with error if issues found (CI mode)",
-    ),
-    _version: bool = typer.Option(
-        False,
-        "--version",
-        help="Show version and exit",
-        callback=version_callback,
-        is_eager=True,
     ),
     max_line_length: int = typer.Option(
         80,
@@ -215,8 +192,7 @@ def lint(
         raise typer.Exit(1) from e
 
 
-@app.command()  # type: ignore[misc]
-@_add_version_to_docstring  # type: ignore[misc]
+@app.command(help="Fix markdown tables in GitHub PRs")  # type: ignore[misc]
 def github(
     target: str = typer.Argument(
         ...,
@@ -240,6 +216,22 @@ def github(
         "--conflict-strategy",
         help="How to resolve conflicts: 'fail', 'ours' (keep PR changes), or 'theirs' (keep base changes)",
         case_sensitive=False,
+    ),
+    update_method: str = typer.Option(
+        "api",
+        "--update-method",
+        help="Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits, default)",
+        case_sensitive=False,
+    ),
+    no_user_signing: bool = typer.Option(
+        False,
+        "--no-user-signing",
+        help="Use user identity but disable commit signing (only applies to 'git' method)",
+    ),
+    bot_identity: bool = typer.Option(
+        False,
+        "--bot-identity",
+        help="Use bot identity without signing (only applies to 'git' method)",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -281,13 +273,6 @@ def github(
         "--log-level",
         help="Set logging level",
     ),
-    _version: bool = typer.Option(
-        False,
-        "--version",
-        help="Show version and exit",
-        callback=version_callback,
-        is_eager=True,
-    ),
 ) -> None:
     """Fix markdown tables in GitHub PRs.
 
@@ -295,7 +280,16 @@ def github(
     - An entire organization (scans all PRs for table issues)
     - A specific PR by URL
 
-    Sync strategies:
+    Update Methods:
+    - 'api' (default): Use GitHub API to create new commits (shows as verified by GitHub)
+    - 'git': Clone repo, amend commit, force-push (respects signing)
+
+    Git Identity & Signing (only applies to 'git' update method):
+    - By default, uses your git user.name, user.email, and commit signing settings
+    - --no-user-signing: Use your identity but disable commit signing
+    - --bot-identity: Use bot identity without signing
+
+    Sync strategies (only applies to 'git' update method):
     - 'none': Fix tables on PR branch as-is (may have conflicts)
     - 'rebase': Rebase PR onto base branch before fixing (cleaner history)
     - 'merge': Merge base branch into PR before fixing (safer)
@@ -313,16 +307,41 @@ def github(
     """
     setup_logging(log_level=log_level, quiet=quiet, verbose=verbose)
 
-    # Validate sync strategy
-    if sync_strategy.lower() not in ["none", "rebase", "merge"]:
+    # Normalize and validate update method
+    update_method = update_method.lower()
+    if update_method not in ["git", "api"]:
+        console.print(
+            f"[red]Error:[/red] Invalid update method '{update_method}'. "
+            "Use 'git' or 'api'"
+        )
+        raise typer.Exit(1)
+
+    # Determine git config mode from CLI flags (only relevant for git method)
+    if bot_identity and no_user_signing:
+        console.print(
+            "[red]Error:[/red] Cannot use both --bot-identity and --no-user-signing"
+        )
+        raise typer.Exit(1)
+
+    if bot_identity:
+        git_config_mode = GitConfigMode.BOT_IDENTITY
+    elif no_user_signing:
+        git_config_mode = GitConfigMode.USER_NO_SIGN
+    else:
+        git_config_mode = GitConfigMode.USER_INHERIT
+
+    # Normalize and validate sync strategy
+    sync_strategy = sync_strategy.lower()
+    if sync_strategy not in ["none", "rebase", "merge"]:
         console.print(
             f"[red]Error:[/red] Invalid sync strategy '{sync_strategy}'. "
             "Use 'none', 'rebase', or 'merge'"
         )
         raise typer.Exit(1)
 
-    # Validate conflict strategy
-    if conflict_strategy.lower() not in ["fail", "ours", "theirs"]:
+    # Normalize and validate conflict strategy
+    conflict_strategy = conflict_strategy.lower()
+    if conflict_strategy not in ["fail", "ours", "theirs"]:
         console.print(
             f"[red]Error:[/red] Invalid conflict strategy '{conflict_strategy}'. "
             "Use 'fail', 'ours', or 'theirs'"
@@ -343,10 +362,12 @@ def github(
             _fix_single_pr(
                 target,
                 token,
-                sync_strategy=sync_strategy.lower(),
-                conflict_strategy=conflict_strategy.lower(),
+                sync_strategy=sync_strategy,
+                conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
                 quiet=quiet,
+                git_config_mode=git_config_mode,
+                update_method=update_method,
             )
         )
     else:
@@ -355,12 +376,14 @@ def github(
             _scan_organization(
                 target,
                 token,
-                sync_strategy=sync_strategy.lower(),
-                conflict_strategy=conflict_strategy.lower(),
+                sync_strategy=sync_strategy,
+                conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
                 include_drafts=include_drafts,
                 debug_org=debug_org,
                 quiet=quiet,
+                git_config_mode=git_config_mode,
+                update_method=update_method,
             )
         )
 
@@ -372,6 +395,8 @@ async def _fix_single_pr(
     conflict_strategy: str = "fail",
     dry_run: bool = False,
     quiet: bool = False,
+    git_config_mode: str = GitConfigMode.USER_INHERIT,
+    update_method: str = "api",
 ) -> None:
     """Fix markdown tables in a single PR."""
     if not quiet:
@@ -379,12 +404,13 @@ async def _fix_single_pr(
 
     try:
         async with GitHubClient(token) as client:  # type: ignore[attr-defined]
-            fixer = PRFixer(client)
+            fixer = PRFixer(client, git_config_mode=git_config_mode)
             result = await fixer.fix_pr_by_url(  # type: ignore[attr-defined]
                 pr_url,
                 sync_strategy=sync_strategy,
                 conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
+                update_method=update_method,
             )
 
             if result.success:
@@ -412,6 +438,8 @@ async def _scan_organization(
     include_drafts: bool = False,
     debug_org: bool = False,
     quiet: bool = False,
+    git_config_mode: str = GitConfigMode.USER_INHERIT,
+    update_method: str = "api",
 ) -> None:
     """Scan organization for PRs with markdown table issues."""
     # Remove github.com prefix if present
@@ -429,7 +457,28 @@ async def _scan_organization(
             )
 
             scanner = PRScanner(client, progress_tracker=progress_tracker)
-            fixer = PRFixer(client)
+            fixer = PRFixer(client, git_config_mode=git_config_mode)
+
+            # Inform about update method
+            if not quiet:
+                method_desc = (
+                    "Git clone/amend/push"
+                    if update_method.lower() == "git"
+                    else "GitHub API commits"
+                )
+                console.print(f"Update method: {method_desc}")
+                if update_method.lower() == "git":
+                    if git_config_mode == GitConfigMode.BOT_IDENTITY:
+                        console.print(
+                            "Git identity: Bot (markdown-table-fixer)"
+                        )
+                    elif git_config_mode == GitConfigMode.USER_NO_SIGN:
+                        console.print("Git identity: User (signing disabled)")
+                    else:
+                        console.print(
+                            "Git identity: User (inheriting signing config)"
+                        )
+                console.print()
 
             # Collect PRs from async generator
             prs_to_process = []
@@ -537,6 +586,7 @@ async def _scan_organization(
                         sync_strategy=sync_strategy,
                         conflict_strategy=conflict_strategy,
                         dry_run=dry_run,
+                        update_method=update_method,
                     )
 
                     if result.success:
