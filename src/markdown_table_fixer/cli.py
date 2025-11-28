@@ -23,6 +23,7 @@ from .exceptions import (
     FileAccessError,
     TableParseError,
 )
+from .git_config import GitConfigMode
 from .github_client import GitHubClient
 from .models import (
     BlockedPR,
@@ -241,6 +242,22 @@ def github(
         help="How to resolve conflicts: 'fail', 'ours' (keep PR changes), or 'theirs' (keep base changes)",
         case_sensitive=False,
     ),
+    update_method: str = typer.Option(
+        "api",
+        "--update-method",
+        help="Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits, default)",
+        case_sensitive=False,
+    ),
+    no_user_signing: bool = typer.Option(
+        False,
+        "--no-user-signing",
+        help="Use user identity but disable commit signing (only applies to 'git' method)",
+    ),
+    bot_identity: bool = typer.Option(
+        False,
+        "--bot-identity",
+        help="Use bot identity without signing (only applies to 'git' method)",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -295,7 +312,16 @@ def github(
     - An entire organization (scans all PRs for table issues)
     - A specific PR by URL
 
-    Sync strategies:
+    Update Methods:
+    - 'api' (default): Use GitHub API to create new commits (shows as verified by GitHub)
+    - 'git': Clone repo, amend commit, force-push (respects signing)
+
+    Git Identity & Signing (only applies to 'git' update method):
+    - By default, uses your git user.name, user.email, and commit signing settings
+    - --no-user-signing: Use your identity but disable commit signing
+    - --bot-identity: Use bot identity without signing
+
+    Sync strategies (only applies to 'git' update method):
     - 'none': Fix tables on PR branch as-is (may have conflicts)
     - 'rebase': Rebase PR onto base branch before fixing (cleaner history)
     - 'merge': Merge base branch into PR before fixing (safer)
@@ -312,6 +338,28 @@ def github(
       markdown-table-fixer github https://github.com/owner/repo/pull/123 --sync-strategy merge --conflict-strategy ours
     """
     setup_logging(log_level=log_level, quiet=quiet, verbose=verbose)
+
+    # Validate update method
+    if update_method.lower() not in ["git", "api"]:
+        console.print(
+            f"[red]Error:[/red] Invalid update method '{update_method}'. "
+            "Use 'git' or 'api'"
+        )
+        raise typer.Exit(1)
+
+    # Determine git config mode from CLI flags (only relevant for git method)
+    if bot_identity and no_user_signing:
+        console.print(
+            "[red]Error:[/red] Cannot use both --bot-identity and --no-user-signing"
+        )
+        raise typer.Exit(1)
+
+    if bot_identity:
+        git_config_mode = GitConfigMode.BOT_IDENTITY
+    elif no_user_signing:
+        git_config_mode = GitConfigMode.USER_NO_SIGN
+    else:
+        git_config_mode = GitConfigMode.USER_INHERIT
 
     # Validate sync strategy
     if sync_strategy.lower() not in ["none", "rebase", "merge"]:
@@ -343,10 +391,12 @@ def github(
             _fix_single_pr(
                 target,
                 token,
-                sync_strategy=sync_strategy.lower(),
-                conflict_strategy=conflict_strategy.lower(),
+                sync_strategy=sync_strategy,
+                conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
                 quiet=quiet,
+                git_config_mode=git_config_mode,
+                update_method=update_method.lower(),
             )
         )
     else:
@@ -355,12 +405,16 @@ def github(
             _scan_organization(
                 target,
                 token,
-                sync_strategy=sync_strategy.lower(),
-                conflict_strategy=conflict_strategy.lower(),
+                sync_strategy=sync_strategy,
+                conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
                 include_drafts=include_drafts,
                 debug_org=debug_org,
                 quiet=quiet,
+                git_config_mode=git_config_mode,
+                update_method=update_method.lower(),
+                bot_identity=bot_identity,
+                no_user_signing=no_user_signing,
             )
         )
 
@@ -372,6 +426,8 @@ async def _fix_single_pr(
     conflict_strategy: str = "fail",
     dry_run: bool = False,
     quiet: bool = False,
+    git_config_mode: str = GitConfigMode.USER_INHERIT,
+    update_method: str = "api",
 ) -> None:
     """Fix markdown tables in a single PR."""
     if not quiet:
@@ -379,12 +435,13 @@ async def _fix_single_pr(
 
     try:
         async with GitHubClient(token) as client:  # type: ignore[attr-defined]
-            fixer = PRFixer(client)
+            fixer = PRFixer(client, git_config_mode=git_config_mode)
             result = await fixer.fix_pr_by_url(  # type: ignore[attr-defined]
                 pr_url,
                 sync_strategy=sync_strategy,
                 conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
+                update_method=update_method.lower(),
             )
 
             if result.success:
@@ -412,6 +469,10 @@ async def _scan_organization(
     include_drafts: bool = False,
     debug_org: bool = False,
     quiet: bool = False,
+    git_config_mode: str = GitConfigMode.USER_INHERIT,
+    update_method: str = "api",
+    bot_identity: bool = False,
+    no_user_signing: bool = False,
 ) -> None:
     """Scan organization for PRs with markdown table issues."""
     # Remove github.com prefix if present
@@ -429,7 +490,28 @@ async def _scan_organization(
             )
 
             scanner = PRScanner(client, progress_tracker=progress_tracker)
-            fixer = PRFixer(client)
+            fixer = PRFixer(client, git_config_mode=git_config_mode)
+
+            # Inform about update method
+            if not quiet:
+                method_desc = (
+                    "Git clone/amend/push"
+                    if update_method.lower() == "git"
+                    else "GitHub API commits"
+                )
+                console.print(f"Update method: {method_desc}")
+                if update_method.lower() == "git":
+                    if bot_identity:
+                        console.print(
+                            "Git identity: Bot (markdown-table-fixer)"
+                        )
+                    elif no_user_signing:
+                        console.print("Git identity: User (signing disabled)")
+                    else:
+                        console.print(
+                            "Git identity: User (inheriting signing config)"
+                        )
+                console.print()
 
             # Collect PRs from async generator
             prs_to_process = []
@@ -537,6 +619,7 @@ async def _scan_organization(
                         sync_strategy=sync_strategy,
                         conflict_strategy=conflict_strategy,
                         dry_run=dry_run,
+                        update_method=update_method.lower(),
                     )
 
                     if result.success:

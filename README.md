@@ -82,6 +82,37 @@ Dry run to preview changes without applying them:
 markdown-table-fixer github https://github.com/owner/repo/pull/123 --dry-run
 ```
 
+#### Update Methods
+
+The tool supports two methods for applying fixes:
+
+**API Method (default)** - Uses GitHub API to create new commits:
+
+```bash
+markdown-table-fixer github https://github.com/owner/repo/pull/123
+```
+
+- Creates new commits via GitHub API
+- Shows as "Verified" by GitHub
+- No Git operations required
+- Faster and simpler
+- Does not support sync strategies (rebase/merge)
+
+**Git Method** - Clones repo, amends commit, force-pushes:
+
+```bash
+markdown-table-fixer github https://github.com/owner/repo/pull/123 \
+  --update-method git
+```
+
+- Respects your local Git signing configuration
+- Amends the existing commit (preserves commit history)
+- Requires Git operations (clone, amend, push)
+- Use when you need to amend commits or use sync strategies
+
+See [GIT_SIGNING.md](docs/GIT_SIGNING.md) for details on commit signing
+with the Git method.
+
 #### Fix PRs Across an Organization
 
 Scan and fix tables in PRs across an entire GitHub organization:
