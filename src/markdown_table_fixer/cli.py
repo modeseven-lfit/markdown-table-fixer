@@ -39,10 +39,15 @@ from .table_validator import TableValidator
 console = Console()
 
 
+def get_version_string() -> str:
+    """Get the formatted version string."""
+    return f"🏷️  markdown-table-fixer version {__version__}"
+
+
 def version_callback(value: bool) -> None:
     """Show version and exit."""
     if value:
-        console.print(f"🏷️  markdown-table-fixer version {__version__}")
+        console.print(get_version_string())
         console.print()
         raise typer.Exit()
 
@@ -68,10 +73,24 @@ def setup_logging(
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-# Create Typer app with version in help
-app = typer.Typer(
+# Create Typer app with custom help formatter
+class CustomTyper(typer.Typer):
+    """Custom Typer class to add version to help output."""
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        """Override to inject version string in help output."""
+        # Check if help is being requested (for any command or subcommand)
+        import sys
+
+        if "--help" in sys.argv or "-h" in sys.argv:
+            console.print(get_version_string())
+        return super().__call__(*args, **kwargs)
+
+
+# Create Typer app
+app = CustomTyper(
     name="markdown-table-fixer",
-    help=f"markdown-table-fixer version {__version__}\n\nFix markdown table formatting issues",
+    help="Fix markdown table formatting issues",
     add_completion=False,
     rich_markup_mode="rich",
 )
