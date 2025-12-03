@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .github_client import GitHubClient
 
+from .git_config import GitConfigMode, configure_git_identity
 from .models import GitHubFixResult, PRInfo
 from .table_fixer import FileFixer, TableFixer
 from .table_parser import MarkdownFileScanner, TableParser
@@ -25,13 +26,19 @@ from .table_validator import TableValidator
 class PRFixer:
     """Fix markdown tables in pull requests."""
 
-    def __init__(self, client: GitHubClient):
+    def __init__(
+        self,
+        client: GitHubClient,
+        git_config_mode: str = GitConfigMode.USER_INHERIT,
+    ):
         """Initialize PR fixer.
 
         Args:
             client: GitHub API client
+            git_config_mode: Git configuration mode (USER_INHERIT, USER_NO_SIGN, or BOT_IDENTITY)
         """
         self.client = client
+        self.git_config_mode = git_config_mode
         self.logger = logging.getLogger("markdown_table_fixer.pr_fixer")
 
     def _sanitize_message(self, message: str) -> str:
@@ -58,25 +65,114 @@ class PRFixer:
 
         return sanitized
 
-    async def fix_pr_by_url(
+    def _create_error_pr_info(self, pr_url: str) -> PRInfo:
+        """Create a dummy PRInfo for error responses.
+
+        Args:
+            pr_url: PR URL for error messages
+
+        Returns:
+            PRInfo with dummy values for error cases
+        """
+        return PRInfo(
+            number=0,
+            title="",
+            repository="",
+            url=pr_url,
+            author="",
+            is_draft=False,
+            head_ref="",
+            head_sha="",
+            base_ref="",
+            mergeable="",
+            merge_state_status="",
+        )
+
+    def _validate_parameters(
+        self,
+        pr_url: str,
+        update_method: str,
+        sync_strategy: str,
+        conflict_strategy: str,
+    ) -> GitHubFixResult | None:
+        """Validate input parameters.
+
+        Args:
+            pr_url: PR URL for error messages
+            update_method: Update method (already normalized)
+            sync_strategy: Sync strategy (already normalized)
+            conflict_strategy: Conflict strategy (already normalized)
+
+        Returns:
+            GitHubFixResult with error if validation fails, None if valid
+        """
+        # Validate update_method
+        if update_method not in ["git", "api"]:
+            return GitHubFixResult(
+                pr_info=self._create_error_pr_info(pr_url),
+                success=False,
+                message=f"Invalid update_method '{update_method}'. Use 'git' or 'api'",
+            )
+
+        # Validate sync_strategy (only relevant for git method)
+        if update_method == "git" and sync_strategy not in [
+            "none",
+            "rebase",
+            "merge",
+        ]:
+            return GitHubFixResult(
+                pr_info=self._create_error_pr_info(pr_url),
+                success=False,
+                message=f"Invalid sync_strategy '{sync_strategy}'. Use 'none', 'rebase', or 'merge'",
+            )
+
+        # Validate conflict_strategy (only relevant for git method)
+        if update_method == "git" and conflict_strategy not in [
+            "fail",
+            "ours",
+            "theirs",
+        ]:
+            return GitHubFixResult(
+                pr_info=self._create_error_pr_info(pr_url),
+                success=False,
+                message=f"Invalid conflict_strategy '{conflict_strategy}'. Use 'fail', 'ours', or 'theirs'",
+            )
+
+        return None
+
+    async def fix_pr_by_url(  # noqa: PLR0911
         self,
         pr_url: str,
         *,
         sync_strategy: str = "none",
         conflict_strategy: str = "fail",
         dry_run: bool = False,
+        update_method: str = "api",
     ) -> GitHubFixResult:
-        """Fix markdown tables in a PR by URL, amending the existing commit.
+        """Fix markdown tables in a PR by URL.
 
         Args:
             pr_url: GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)
-            sync_strategy: How to sync with base branch: 'none', 'rebase', or 'merge'
-            conflict_strategy: How to resolve conflicts: 'fail', 'ours', or 'theirs'
+            sync_strategy: How to sync with base branch: 'none', 'rebase', or 'merge' (git method only)
+            conflict_strategy: How to resolve conflicts: 'fail', 'ours', or 'theirs' (git method only)
             dry_run: If True, don't actually push changes
+            update_method: Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits)
 
         Returns:
             GitHubFixResult with operation details
         """
+        # Normalize parameters to lowercase for case-insensitive comparison
+        update_method = update_method.lower()
+        sync_strategy = sync_strategy.lower()
+        conflict_strategy = conflict_strategy.lower()
+
+        # Validate parameters
+        validation_error = self._validate_parameters(
+            pr_url, update_method, sync_strategy, conflict_strategy
+        )
+        if validation_error:
+            return validation_error
+
         # Parse PR URL
         match = re.match(
             r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url
@@ -150,23 +246,34 @@ class PRFixer:
                 merge_state_status=pr_data.get("mergeable_state", "unknown"),
             )
 
-            if not clone_url:
+            if not clone_url and update_method == "git":
                 return GitHubFixResult(
                     pr_info=pr_info,
                     success=False,
                     message="PR head repository not accessible",
                 )
 
-            # Clone and fix using Git operations
-            return await self._fix_pr_with_git(
-                pr_info,
-                clone_url,
-                owner,
-                repo,
-                sync_strategy=sync_strategy,
-                conflict_strategy=conflict_strategy,
-                dry_run=dry_run,
-            )
+            # Route to appropriate update method
+            if update_method == "api":
+                # Use GitHub API to update files
+                return await self._fix_pr_with_api(
+                    pr_info,
+                    owner,
+                    repo,
+                    pr_data,
+                    dry_run=dry_run,
+                )
+            else:
+                # Clone and fix using Git operations
+                return await self._fix_pr_with_git(
+                    pr_info,
+                    clone_url,
+                    owner,
+                    repo,
+                    sync_strategy=sync_strategy,
+                    conflict_strategy=conflict_strategy,
+                    dry_run=dry_run,
+                )
 
         except Exception as e:
             self.logger.error(f"Error fixing PR: {e}", exc_info=True)
@@ -199,6 +306,7 @@ class PRFixer:
         sync_strategy: str = "none",
         conflict_strategy: str = "fail",
         dry_run: bool = False,
+        git_config_mode: str | None = None,
     ) -> GitHubFixResult:
         """Fix PR using Git operations (clone, fix, amend, push).
 
@@ -210,10 +318,13 @@ class PRFixer:
             sync_strategy: How to sync with base branch: 'none', 'rebase', or 'merge'
             conflict_strategy: How to resolve conflicts: 'fail', 'ours', or 'theirs'
             dry_run: If True, don't push changes
+            git_config_mode: Override git config mode for this operation
 
         Returns:
             GitHubFixResult with operation details
         """
+        # Use provided mode or fall back to instance default
+        config_mode = git_config_mode or self.git_config_mode
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_dir = Path(tmpdir) / "repo"
             self.logger.debug(f"Cloning {clone_url} to {repo_dir}")
@@ -318,24 +429,14 @@ class PRFixer:
                         files_modified=result_files,
                     )
 
-                # Configure git
-                subprocess.run(
-                    ["git", "config", "user.name", "markdown-table-fixer"],
-                    cwd=repo_dir,
-                    check=True,
-                    capture_output=True,
+                # Configure git identity and signing
+                git_config = configure_git_identity(
+                    repo_dir,
+                    mode=config_mode,
+                    bot_name="markdown-table-fixer",
+                    bot_email="noreply@linuxfoundation.org",
                 )
-                subprocess.run(
-                    [
-                        "git",
-                        "config",
-                        "user.email",
-                        "noreply@linuxfoundation.org",
-                    ],
-                    cwd=repo_dir,
-                    check=True,
-                    capture_output=True,
-                )
+                self.logger.debug(f"Git config applied: {git_config}")
 
                 # Stage the changes
                 for file_path in files_modified:
@@ -574,6 +675,55 @@ class PRFixer:
                     self.logger.warning(
                         f"Merge had conflicts, attempting to resolve with strategy '{conflict_strategy}'"
                     )
+
+    async def _fix_pr_with_api(
+        self,
+        pr_info: PRInfo,
+        owner: str,
+        repo: str,
+        pr_data: dict[str, Any],
+        *,
+        dry_run: bool = False,
+    ) -> GitHubFixResult:
+        """Fix PR using GitHub API (creates new commits, shows as verified by GitHub).
+
+        Args:
+            pr_info: PR information
+            owner: Repository owner
+            repo: Repository name
+            pr_data: Full PR data from API
+            dry_run: If True, don't actually push changes
+
+        Returns:
+            GitHubFixResult with operation details
+        """
+        result = await self.fix_pr_tables(
+            owner,
+            repo,
+            pr_data,
+            dry_run=dry_run,
+            create_comment=True,
+        )
+
+        if result.get("success"):
+            files_modified = [
+                Path(f["filename"]) for f in result.get("fixed_files", [])
+            ]
+            message = f"Fixed {result.get('tables_fixed', 0)} table(s) in {result.get('files_fixed', 0)} file(s)"
+
+            return GitHubFixResult(
+                pr_info=pr_info,
+                success=True,
+                message=message,
+                files_modified=files_modified,
+            )
+        else:
+            return GitHubFixResult(
+                pr_info=pr_info,
+                success=False,
+                message=result.get("error", "Failed to fix tables via API"),
+                error=result.get("error"),
+            )
 
     async def fix_pr_tables(
         self,

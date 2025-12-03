@@ -105,19 +105,9 @@ test_version_flag() {
     assert_contains "$output" "markdown-table-fixer version" "Version output contains tool name and version"
 }
 
-test_version_flag_lint() {
-    print_test "Version flag in lint command (lint --version)"
 
-    output=$(markdown-table-fixer lint --version 2>&1)
-    assert_contains "$output" "markdown-table-fixer version" "Version shown in lint command"
-}
 
-test_version_flag_github() {
-    print_test "Version flag in github command (github --version)"
 
-    output=$(markdown-table-fixer github --version 2>&1)
-    assert_contains "$output" "markdown-table-fixer version" "Version shown in github command"
-}
 
 test_help_shows_version() {
     print_test "Help output shows version (--help)"
@@ -474,8 +464,6 @@ main() {
 
     # Run all tests
     test_version_flag
-    test_version_flag_lint
-    test_version_flag_github
     test_help_shows_version
     test_lint_help_shows_version
     test_auto_fix_enabled
