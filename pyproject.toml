@@ -136,6 +136,18 @@ module = ["tests.*"]
 disallow_untyped_decorators = false
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+module = ["typer.*"]
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["tenacity.*"]
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["wcwidth"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]

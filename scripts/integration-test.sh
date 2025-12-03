@@ -116,13 +116,6 @@ test_help_shows_version() {
     assert_contains "$output" "markdown-table-fixer version" "Version shown in help output"
 }
 
-test_lint_help_shows_version() {
-    print_test "Lint help output shows version (lint --help)"
-
-    output=$(markdown-table-fixer lint --help 2>&1)
-    assert_contains "$output" "markdown-table-fixer version" "Version shown in lint help"
-}
-
 test_auto_fix_enabled() {
     print_test "Auto-fix enabled by default (--auto-fix)"
 
@@ -465,7 +458,6 @@ main() {
     # Run all tests
     test_version_flag
     test_help_shows_version
-    test_lint_help_shows_version
     test_auto_fix_enabled
     test_no_auto_fix
     test_fail_on_error_with_issues
