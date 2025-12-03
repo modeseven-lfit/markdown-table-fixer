@@ -77,7 +77,7 @@ app = typer.Typer(
 )
 
 
-@app.callback()  # type: ignore[misc]
+@app.callback()
 def main(
     version: bool = typer.Option(
         False,
@@ -91,7 +91,7 @@ def main(
     pass
 
 
-@app.command(help="Scan and optionally fix markdown table formatting issues")  # type: ignore[misc]
+@app.command(help="Scan and optionally fix markdown table formatting issues")
 def lint(
     path: Path = typer.Argument(
         Path("."),
@@ -192,7 +192,7 @@ def lint(
         raise typer.Exit(1) from e
 
 
-@app.command(help="Fix markdown tables in GitHub PRs")  # type: ignore[misc]
+@app.command(help="Fix markdown tables in GitHub pull requests")
 def github(
     target: str = typer.Argument(
         ...,
