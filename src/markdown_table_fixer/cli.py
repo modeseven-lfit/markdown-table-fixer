@@ -27,7 +27,6 @@ from .models import (
     OutputFormat,
     PRInfo,
     ScanResult,
-    TableViolation,
 )
 from .pr_fixer import PRFixer
 from .pr_scanner import PRScanner
@@ -172,7 +171,6 @@ def lint(
         console.print(f"🔍 Scanning: {scan_path}")
         if should_fix:
             console.print("🔧 Auto-fix enabled")
-        console.print()
 
     try:
         scanner = MarkdownFileScanner(scan_path)
@@ -206,6 +204,9 @@ def lint(
         if (check or fail_on_error) and scan_result.files_with_issues > 0:
             raise typer.Exit(1)
 
+    except typer.Exit:
+        # Re-raise typer.Exit without catching it as a general exception
+        raise
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1) from e
@@ -736,36 +737,30 @@ def _output_text_results(result: ScanResult, quiet: bool) -> None:
             console.print(f"  ... and {len(result.errors) - 5} more errors")
         console.print()
 
-    # Show sample violations
-    if result.files_with_issues > 0:
+    # Show all files with violations or errors
+    if result.files_with_issues > 0 or result.errors:
         console.print("[bold yellow]Files with issues:[/bold yellow]")
-        for file_result in result.file_results[:3]:
+
+        # Collect files with issues (violations or errors)
+        files_to_show = []
+        for file_result in result.file_results:
+            if file_result.has_violations or file_result.error:
+                files_to_show.append(file_result)
+
+        # Display each file with its issue count
+        for file_result in files_to_show:
             if file_result.has_violations:
-                console.print(f"{file_result.file_path}")
-
-                # Group violations by table
-                violations_by_table: dict[int, list[TableViolation]] = {}
-                for violation in file_result.violations:
-                    table_line = violation.table_start_line
-                    if table_line not in violations_by_table:
-                        violations_by_table[table_line] = []
-                    violations_by_table[table_line].append(violation)
-
-                # Show summary per table
-                for table_line in sorted(violations_by_table.keys()):
-                    violations = violations_by_table[table_line]
-                    # Count unique rows with violations
-                    unique_rows = len({v.line_number for v in violations})
-                    console.print(
-                        f"  Markdown table at line {table_line} has {unique_rows} "
-                        f"row(s) with formatting issues"
-                    )
-                console.print()
-
-        if result.files_with_issues > 3:
-            console.print(
-                f"... and {result.files_with_issues - 3} more files with issues"
-            )
+                # Count total violations for this file
+                violation_count = len(file_result.violations)
+                error_word = "Error" if violation_count == 1 else "Errors"
+                console.print(
+                    f"  {file_result.file_path} [{violation_count} {error_word}]"
+                )
+            elif file_result.error:
+                # File has a parsing or processing error
+                console.print(
+                    f"  {file_result.file_path} [Parse Error: {file_result.error}]"
+                )
 
 
 if __name__ == "__main__":

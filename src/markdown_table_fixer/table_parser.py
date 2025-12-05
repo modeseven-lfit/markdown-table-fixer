@@ -170,9 +170,9 @@ class TableParser:
         if stripped.endswith("|"):
             stripped = stripped[:-1]
 
-        # Split by pipe to get cells
+        # Split by pipe to get cells, but handle escaped pipes and HTML entities
         # We need to track column positions for alignment checking
-        parts = stripped.split("|")
+        parts = self._split_by_unescaped_pipes(stripped)
 
         current_col = 1  # Start after first pipe
         for part in parts:
@@ -188,6 +188,49 @@ class TableParser:
             current_col = end_col + 1
 
         return cells
+
+    def _split_by_unescaped_pipes(self, text: str) -> list[str]:
+        """Split text by pipes, but not escaped pipes or HTML entities.
+
+        Args:
+            text: Text to split
+
+        Returns:
+            List of cell contents
+        """
+        parts = []
+        current = []
+        i = 0
+
+        while i < len(text):
+            # Check for backslash-escaped pipe
+            if i < len(text) - 1 and text[i : i + 2] == r"\|":
+                # Keep the escaped pipe in the content
+                current.append(text[i : i + 2])
+                i += 2
+            # Check for HTML entity for pipe (&#124;)
+            elif i < len(text) - 5 and text[i : i + 6] == "&#124;":
+                # Keep the HTML entity in the content
+                current.append(text[i : i + 6])
+                i += 6
+            # Check for unescaped pipe (cell separator)
+            elif text[i] == "|":
+                # This is a cell separator
+                parts.append("".join(current))
+                current = []
+                i += 1
+            else:
+                # Regular character
+                current.append(text[i])
+                i += 1
+
+        # Add the last cell
+        if (
+            current or parts
+        ):  # Include empty last cell if there were previous parts
+            parts.append("".join(current))
+
+        return parts
 
 
 class MarkdownFileScanner:

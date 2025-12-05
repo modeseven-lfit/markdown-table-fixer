@@ -188,8 +188,11 @@ class TableValidator:
     def _calculate_column_widths(self) -> list[int]:
         """Calculate the maximum width needed for each column.
 
+        For MD060 compliance, we calculate widths based on character length.
+        This uses string length, not display width or byte length.
+
         Returns:
-            List of column widths
+            List of column widths (in characters)
         """
         if not self.table.rows:
             return []
@@ -203,6 +206,7 @@ class TableValidator:
             for row in self.table.rows:
                 if col_idx < len(row.cells):
                     cell = row.cells[col_idx]
+                    # Use character length for MD060 compliance (pipe alignment)
                     content_width = len(cell.content.strip())
                     max_width = max(max_width, content_width)
             widths.append(max_width)
@@ -213,10 +217,10 @@ class TableValidator:
         """Calculate expected positions of pipes based on column widths.
 
         Args:
-            column_widths: Width of each column
+            column_widths: Width of each column (in characters)
 
         Returns:
-            List of pipe positions
+            List of pipe positions (in characters)
         """
         positions: list[int] = [0]  # Starting pipe at position 0
         current_pos = 0
@@ -237,13 +241,16 @@ class TableValidator:
             row: The row to analyze
 
         Returns:
-            List of pipe positions
+            List of pipe positions (in characters)
         """
         positions: list[int] = []
         line = row.raw_line
 
         for idx, char in enumerate(line):
             if char == "|":
+                # Skip escaped pipes (preceded by backslash)
+                if idx > 0 and line[idx - 1] == "\\":
+                    continue
                 positions.append(idx)
 
         return positions

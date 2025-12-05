@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -86,8 +88,11 @@ class TableFixer:
     def _calculate_column_widths(self) -> list[int]:
         """Calculate the maximum width needed for each column.
 
+        For MD060 compliance, we need to align pipes by character position.
+        This uses string length, not display width or byte length.
+
         Returns:
-            List of column widths
+            List of column widths (in characters)
         """
         if not self.table.rows:
             return []
@@ -105,6 +110,7 @@ class TableFixer:
                     if row.is_separator:
                         content_width = 3  # Minimum "---"
                     else:
+                        # Use character length for MD060 compliance (pipe alignment)
                         content_width = len(cell.content.strip())
                     max_width = max(max_width, content_width)
             widths.append(max_width)
@@ -116,7 +122,7 @@ class TableFixer:
 
         Args:
             row: The row to format
-            column_widths: Width of each column
+            column_widths: Width of each column (in characters)
 
         Returns:
             Formatted row string
@@ -129,7 +135,8 @@ class TableFixer:
                 column_widths[idx] if idx < len(column_widths) else len(content)
             )
 
-            # Pad content to column width
+            # Pad content to column width based on character length
+            # This ensures pipes align by character position (MD060 compliance)
             padded = content.ljust(width)
             parts.append(f" {padded} ")
 
@@ -142,7 +149,7 @@ class TableFixer:
 
         Args:
             row: The separator row to format
-            column_widths: Width of each column
+            column_widths: Width of each column (in characters)
 
         Returns:
             Formatted separator row string
@@ -188,6 +195,153 @@ class FileFixer:
         """
         self.file_path = file_path
         self.max_line_length = max_line_length
+        self._md013_enabled = self._check_md013_enabled()
+        self._md060_enabled = self._check_md060_enabled()
+
+    def _check_md013_enabled(self) -> bool:
+        """Check if MD013 is enabled in markdownlint config.
+
+        Returns:
+            True if MD013 checking is enabled, False otherwise
+        """
+        # Look for markdownlint config files in parent directories
+        current_dir = self.file_path.parent
+        config_names = [
+            ".markdownlint.json",
+            ".markdownlint.jsonc",
+            ".markdownlint.yaml",
+            ".markdownlint.yml",
+            ".markdownlintrc",
+        ]
+
+        # Search up to 5 levels up
+        for _ in range(5):
+            for config_name in config_names:
+                config_path = current_dir / config_name
+                if config_path.exists():
+                    try:
+                        if config_name.endswith((".json", ".jsonc", "rc")):
+                            with open(config_path, encoding="utf-8") as f:
+                                # Remove comments for .jsonc files
+                                content = f.read()
+                                if config_name.endswith(".jsonc"):
+                                    # Simple comment removal (not perfect but handles most cases)
+                                    lines = []
+                                    for content_line in content.split("\n"):
+                                        # Remove line comments
+                                        processed_line = content_line
+                                        if "//" in content_line:
+                                            processed_line = content_line[
+                                                : content_line.index("//")
+                                            ]
+                                        lines.append(processed_line)
+                                    content = "\n".join(lines)
+                                config = json.loads(content)
+                                # Check if MD013 is explicitly disabled
+                                if "MD013" in config:
+                                    return config["MD013"] is not False
+                                # If not specified, assume enabled (markdownlint default)
+                                return True
+                    except (json.JSONDecodeError, OSError):
+                        # If config can't be read, assume MD013 is enabled
+                        pass
+
+            # Move up one directory
+            if current_dir.parent == current_dir:
+                break  # Reached root
+            current_dir = current_dir.parent
+
+        # No config found, assume MD013 is enabled by default
+        return True
+
+    def _check_md060_enabled(self) -> bool:
+        """Check if MD060 is enabled in markdownlint config.
+
+        Returns:
+            True if MD060 checking is enabled, False otherwise
+        """
+        # Look for markdownlint config files in parent directories
+        current_dir = self.file_path.parent
+        config_names = [
+            ".markdownlint.json",
+            ".markdownlint.jsonc",
+            ".markdownlint.yaml",
+            ".markdownlint.yml",
+            ".markdownlintrc",
+        ]
+
+        # Search up to 5 levels up
+        for _ in range(5):
+            for config_name in config_names:
+                config_path = current_dir / config_name
+                if config_path.exists():
+                    try:
+                        if config_name.endswith((".json", ".jsonc", "rc")):
+                            with open(config_path, encoding="utf-8") as f:
+                                # Remove comments for .jsonc files
+                                content = f.read()
+                                if config_name.endswith(".jsonc"):
+                                    # Simple comment removal (not perfect but handles most cases)
+                                    lines = []
+                                    for content_line in content.split("\n"):
+                                        # Remove line comments
+                                        processed_line = content_line
+                                        if "//" in content_line:
+                                            processed_line = content_line[
+                                                : content_line.index("//")
+                                            ]
+                                        lines.append(processed_line)
+                                    content = "\n".join(lines)
+                                config = json.loads(content)
+                                # Check if MD060 is explicitly disabled
+                                if "MD060" in config:
+                                    return config["MD060"] is not False
+                                # If not specified, assume enabled (markdownlint default)
+                                return True
+                    except (json.JSONDecodeError, OSError):
+                        # If config can't be read, assume MD060 is enabled
+                        pass
+
+            # Move up one directory
+            if current_dir.parent == current_dir:
+                break  # Reached root
+            current_dir = current_dir.parent
+
+        # No config found, assume MD060 is enabled by default
+        return True
+
+    def _table_has_emojis(self, table: MarkdownTable) -> bool:
+        """Check if table contains emoji characters.
+
+        Emojis cause alignment issues because they take 1 character position
+        but display as 2 characters wide, making MD060 compliance impossible.
+
+        Args:
+            table: The table to check
+
+        Returns:
+            True if table contains emojis
+        """
+        # Emoji pattern - matches most common emoji ranges
+        emoji_pattern = re.compile(
+            "["
+            "\U0001f600-\U0001f64f"  # emoticons
+            "\U0001f300-\U0001f5ff"  # symbols & pictographs
+            "\U0001f680-\U0001f6ff"  # transport & map symbols
+            "\U0001f1e0-\U0001f1ff"  # flags (iOS)
+            "\U00002702-\U000027b0"  # dingbats
+            "\U000024c2-\U0001f251"  # enclosed characters
+            "\U0001f900-\U0001f9ff"  # supplemental symbols
+            "\U0001fa00-\U0001faff"  # extended pictographs
+            "]+",
+            flags=re.UNICODE,
+        )
+
+        for row in table.rows:
+            for cell in row.cells:
+                if emoji_pattern.search(cell.content):
+                    return True
+        return False
 
     def fix_file(
         self, tables: list[MarkdownTable], dry_run: bool = False
@@ -232,7 +386,10 @@ class FileFixer:
         # Build a map of all tables that need MD013 comments
         tables_needing_md013: dict[int, tuple[MarkdownTable, list[str]]] = {}
 
-        # Check all tables for line length violations (not just fixed ones)
+        # Build a map of tables needing MD060 comments (tables with emojis)
+        tables_needing_md060: dict[int, tuple[MarkdownTable, list[str]]] = {}
+
+        # Check all tables for line length violations and emoji issues
         for table in all_tables:
             # Get the table content (either fixed or original)
             table_lines = []
@@ -261,24 +418,50 @@ class FileFixer:
             if needs_md013:
                 tables_needing_md013[table.start_line] = (table, table_lines)
 
+            # Check if table has emojis (causes MD060 violations)
+            if self._md060_enabled and self._table_has_emojis(table):
+                tables_needing_md060[table.start_line] = (table, table_lines)
+
         # Create a unified list of all table modifications to apply
-        # This includes both fixes and MD013-only tables
-        all_modifications: list[tuple[int, int, list[str], bool]] = []
+        # This includes fixes, MD013-only tables, and MD060-only tables
+        all_modifications: list[tuple[int, int, list[str], bool, bool]] = []
 
         # Add fixes to modifications list
         for fix in fixes:
             fixed_lines = fix.fixed_content.split("\n")
             needs_md013 = fix.start_line in tables_needing_md013
+            needs_md060 = fix.start_line in tables_needing_md060
             all_modifications.append(
-                (fix.start_line, fix.end_line, fixed_lines, needs_md013)
+                (
+                    fix.start_line,
+                    fix.end_line,
+                    fixed_lines,
+                    needs_md013,
+                    needs_md060,
+                )
             )
 
         # Add tables that need MD013 but have no fixes
         for start_line, (table, table_lines) in tables_needing_md013.items():
             # Check if already in fixes
             if not any(mod[0] == start_line for mod in all_modifications):
+                needs_md060 = start_line in tables_needing_md060
                 all_modifications.append(
-                    (table.start_line, table.end_line, table_lines, True)
+                    (
+                        table.start_line,
+                        table.end_line,
+                        table_lines,
+                        True,
+                        needs_md060,
+                    )
+                )
+
+        # Add tables that need MD060 but have no fixes or MD013
+        for start_line, (table, table_lines) in tables_needing_md060.items():
+            # Check if already in fixes or MD013 list
+            if not any(mod[0] == start_line for mod in all_modifications):
+                all_modifications.append(
+                    (table.start_line, table.end_line, table_lines, False, True)
                 )
 
         # Apply all modifications in reverse order to maintain line numbers
@@ -286,22 +469,36 @@ class FileFixer:
         if not all_modifications:
             return
 
-        for start_line, end_line, content_lines, needs_md013 in sorted(
-            all_modifications, key=lambda x: x[0], reverse=True
-        ):
+        for (
+            start_line,
+            end_line,
+            content_lines,
+            needs_md013,
+            needs_md060,
+        ) in sorted(all_modifications, key=lambda x: x[0], reverse=True):
             start_idx = start_line - 1
             end_idx = end_line
 
             # Prepare the lines to insert
             new_lines = [line + "\n" for line in content_lines]
 
-            # Add MD013 comments if needed
-            if needs_md013:
+            # Collect all disable/enable rules needed
+            disable_rules = []
+            if needs_md013 and self._md013_enabled:
+                disable_rules.append("MD013")
+            if needs_md060 and self._md060_enabled:
+                disable_rules.append("MD060")
+
+            # Add markdownlint comments if needed
+            if disable_rules:
+                disable_comment = " ".join(disable_rules)
                 # Check if disable comment already exists within 3 lines before the table
                 has_disable = False
                 check_start = max(0, start_idx - 3)
                 for i in range(check_start, start_idx):
-                    if "markdownlint-disable MD013" in lines[i]:
+                    if "markdownlint-disable" in lines[i] and all(
+                        rule in lines[i] for rule in disable_rules
+                    ):
                         has_disable = True
                         break
 
@@ -309,7 +506,9 @@ class FileFixer:
                 has_enable = False
                 check_end = min(len(lines), end_idx + 3)
                 for i in range(end_idx, check_end):
-                    if "markdownlint-enable MD013" in lines[i]:
+                    if "markdownlint-enable" in lines[i] and all(
+                        rule in lines[i] for rule in disable_rules
+                    ):
                         has_enable = True
                         break
 
@@ -320,13 +519,15 @@ class FileFixer:
                         # No blank line, add both blank line and comment
                         new_lines.insert(0, "\n")
                         new_lines.insert(
-                            1, "<!-- markdownlint-disable MD013 -->\n"
+                            1,
+                            f"<!-- markdownlint-disable {disable_comment} -->\n",
                         )
                         new_lines.insert(2, "\n")
                     else:
                         # Blank line exists, just add comment
                         new_lines.insert(
-                            0, "<!-- markdownlint-disable MD013 -->\n"
+                            0,
+                            f"<!-- markdownlint-disable {disable_comment} -->\n",
                         )
                         new_lines.insert(1, "\n")
 
@@ -334,7 +535,9 @@ class FileFixer:
                 if not has_enable:
                     # Always add blank line and enable comment
                     new_lines.append("\n")
-                    new_lines.append("<!-- markdownlint-enable MD013 -->\n")
+                    new_lines.append(
+                        f"<!-- markdownlint-enable {disable_comment} -->\n"
+                    )
 
             # Replace the section
             lines[start_idx:end_idx] = new_lines
