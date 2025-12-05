@@ -169,3 +169,61 @@ def test_non_printable_characters_fallback():
     cell = TableCell(content="\x00\x01\x02", start_col=0, end_col=3)
     # Should fall back to len()
     assert cell.display_width == 3
+
+
+def test_html_entity_decoding():
+    """Test that HTML entities are properly decoded before width calculation."""
+    # Test numeric entity for pipe character
+    cell = TableCell(content="&#124;", start_col=0, end_col=6)
+    # &#124; = | which has width 1
+    assert cell.display_width == 1
+
+    # Test named entity
+    cell = TableCell(content="&lt;", start_col=0, end_col=4)
+    # &lt; = < which has width 1
+    assert cell.display_width == 1
+
+    # Test hexadecimal entity for emoji (grinning face)
+    cell = TableCell(content="&#x1F600;", start_col=0, end_col=9)
+    # &#x1F600; = 😀 which has width 2
+    assert cell.display_width == 2
+
+    # Test decimal entity for emoji (grinning face)
+    cell = TableCell(content="&#128512;", start_col=0, end_col=9)
+    # &#128512; = 😀 which has width 2
+    assert cell.display_width == 2
+
+    # Test mixed content with entities and regular text
+    cell = TableCell(content="Status: &#x2705;", start_col=0, end_col=16)
+    # "Status: " (8) + &#x2705; = ✅ (2) = 10
+    assert cell.display_width == 10
+
+    # Test multiple entities
+    cell = TableCell(content="&#x2705; &#x274C;", start_col=0, end_col=17)
+    # &#x2705; = ✅ (2) + space (1) + &#x274C; = ❌ (2) = 5
+    assert cell.display_width == 5
+
+
+def test_html_entity_with_regular_text():
+    """Test HTML entities mixed with regular ASCII text."""
+    cell = TableCell(content="Test &amp; Example", start_col=0, end_col=18)
+    # "Test " (5) + &amp; = & (1) + " Example" (8) = 14
+    assert cell.display_width == 14
+
+    # Test entity at the beginning
+    cell = TableCell(content="&quot;Hello&quot;", start_col=0, end_col=18)
+    # &quot; = " (1) + "Hello" (5) + &quot; = " (1) = 7
+    assert cell.display_width == 7
+
+
+def test_html_entity_chinese_characters():
+    """Test HTML entities for wide characters like Chinese."""
+    # Chinese character (中) via numeric entity
+    cell = TableCell(content="&#20013;", start_col=0, end_col=8)
+    # &#20013; = 中 which has width 2
+    assert cell.display_width == 2
+
+    # Mix of entity and regular Chinese character
+    cell = TableCell(content="&#20013;文", start_col=0, end_col=11)
+    # &#20013; = 中 (2) + 文 (2) = 4
+    assert cell.display_width == 4

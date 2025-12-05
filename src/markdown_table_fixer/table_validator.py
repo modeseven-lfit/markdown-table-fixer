@@ -248,8 +248,14 @@ class TableValidator:
 
         for idx, char in enumerate(line):
             if char == "|":
-                # Skip escaped pipes (preceded by backslash)
-                if idx > 0 and line[idx - 1] == "\\":
+                # Skip escaped pipes (preceded by an odd number of backslashes)
+                backslash_count = 0
+                j = idx - 1
+                while j >= 0 and line[j] == "\\":
+                    backslash_count += 1
+                    j -= 1
+                if backslash_count % 2 == 1:
+                    # Odd number of backslashes means the pipe is escaped
                     continue
                 positions.append(idx)
 
