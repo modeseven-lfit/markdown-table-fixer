@@ -47,12 +47,33 @@ class TableCell:
 
         Uses wcwidth to properly calculate display width for Unicode characters,
         including emojis which display as 2 characters wide but count as 1 in len().
+        Also handles HTML entities (e.g., &#124; for |) and escaped characters.
         """
+        import re
+
         stripped = self.content.strip()
-        width = wcwidth.wcswidth(stripped)
+
+        # Replace common HTML entities with their single-character equivalents for width calculation
+        # &#124; = | (pipe)
+        # &#60; = < (less than)
+        # &#62; = > (greater than)
+        # &#38; = & (ampersand)
+        # &#34; = " (quote)
+        # &#39; = ' (apostrophe)
+        temp = re.sub(
+            r"&#\d+;", "X", stripped
+        )  # Replace numeric entities with single char
+        temp = re.sub(
+            r"&[a-zA-Z]+;", "X", temp
+        )  # Replace named entities with single char
+
+        # For escaped pipes \| we count them as 1 character (the pipe itself)
+        # but keep the backslash for now as it's part of the display
+
+        width = wcwidth.wcswidth(temp)
         # wcswidth returns -1 if string contains non-printable characters
         # Fall back to len() in that case
-        return width if width >= 0 else len(stripped)
+        return width if width >= 0 else len(temp)
 
 
 @dataclass
