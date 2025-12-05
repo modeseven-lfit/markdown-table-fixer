@@ -9,6 +9,8 @@ import json
 import re
 from typing import TYPE_CHECKING
 
+import yaml
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -198,11 +200,71 @@ class FileFixer:
         self._md013_enabled = self._check_md013_enabled()
         self._md060_enabled = self._check_md060_enabled()
 
-    def _check_md013_enabled(self) -> bool:
-        """Check if MD013 is enabled in markdownlint config.
+    def _remove_jsonc_comments(self, content: str) -> str:
+        """Remove comments from JSONC content.
+
+        This is a simple implementation that removes // comments while being
+        aware of strings. It's not perfect but handles most common cases.
+
+        Args:
+            content: JSONC content string
 
         Returns:
-            True if MD013 checking is enabled, False otherwise
+            Content with comments removed
+        """
+        lines = []
+        for line in content.split("\n"):
+            # Track if we're inside a string
+            in_string = False
+            escape_next = False
+            processed = []
+
+            i = 0
+            while i < len(line):
+                char = line[i]
+
+                if escape_next:
+                    processed.append(char)
+                    escape_next = False
+                    i += 1
+                    continue
+
+                if char == "\\":
+                    processed.append(char)
+                    escape_next = True
+                    i += 1
+                    continue
+
+                if char == '"':
+                    in_string = not in_string
+                    processed.append(char)
+                    i += 1
+                    continue
+
+                # Check for comment start (only outside strings)
+                if (
+                    not in_string
+                    and i < len(line) - 1
+                    and line[i : i + 2] == "//"
+                ):
+                    # Rest of line is a comment
+                    break
+
+                processed.append(char)
+                i += 1
+
+            lines.append("".join(processed))
+
+        return "\n".join(lines)
+
+    def _check_rule_enabled(self, rule_name: str) -> bool:
+        """Check if a markdownlint rule is enabled in config.
+
+        Args:
+            rule_name: Name of the rule (e.g., "MD013", "MD060")
+
+        Returns:
+            True if rule checking is enabled, False otherwise
         """
         # Look for markdownlint config files in parent directories
         current_dir = self.file_path.parent
@@ -220,30 +282,31 @@ class FileFixer:
                 config_path = current_dir / config_name
                 if config_path.exists():
                     try:
-                        if config_name.endswith((".json", ".jsonc", "rc")):
-                            with open(config_path, encoding="utf-8") as f:
-                                # Remove comments for .jsonc files
+                        with open(config_path, encoding="utf-8") as f:
+                            if config_name.endswith((".yaml", ".yml")):
+                                config = yaml.safe_load(f)
+                                # yaml.safe_load returns None for empty files
+                                if config is None:
+                                    config = {}
+                            elif config_name.endswith(
+                                (".json", ".jsonc", "rc")
+                            ):
                                 content = f.read()
                                 if config_name.endswith(".jsonc"):
-                                    # Simple comment removal (not perfect but handles most cases)
-                                    lines = []
-                                    for content_line in content.split("\n"):
-                                        # Remove line comments
-                                        processed_line = content_line
-                                        if "//" in content_line:
-                                            processed_line = content_line[
-                                                : content_line.index("//")
-                                            ]
-                                        lines.append(processed_line)
-                                    content = "\n".join(lines)
+                                    content = self._remove_jsonc_comments(
+                                        content
+                                    )
                                 config = json.loads(content)
-                                # Check if MD013 is explicitly disabled
-                                if "MD013" in config:
-                                    return config["MD013"] is not False
-                                # If not specified, assume enabled (markdownlint default)
-                                return True
-                    except (json.JSONDecodeError, OSError):
-                        # If config can't be read, assume MD013 is enabled
+                            else:
+                                continue
+
+                            # Check if rule is explicitly disabled
+                            if rule_name in config:
+                                return config[rule_name] is not False
+                            # If not specified, assume enabled (markdownlint default)
+                            return True
+                    except (json.JSONDecodeError, yaml.YAMLError, OSError):
+                        # If config can't be read, assume rule is enabled
                         pass
 
             # Move up one directory
@@ -251,8 +314,16 @@ class FileFixer:
                 break  # Reached root
             current_dir = current_dir.parent
 
-        # No config found, assume MD013 is enabled by default
+        # No config found, assume rule is enabled by default
         return True
+
+    def _check_md013_enabled(self) -> bool:
+        """Check if MD013 is enabled in markdownlint config.
+
+        Returns:
+            True if MD013 checking is enabled, False otherwise
+        """
+        return self._check_rule_enabled("MD013")
 
     def _check_md060_enabled(self) -> bool:
         """Check if MD060 is enabled in markdownlint config.
@@ -260,55 +331,7 @@ class FileFixer:
         Returns:
             True if MD060 checking is enabled, False otherwise
         """
-        # Look for markdownlint config files in parent directories
-        current_dir = self.file_path.parent
-        config_names = [
-            ".markdownlint.json",
-            ".markdownlint.jsonc",
-            ".markdownlint.yaml",
-            ".markdownlint.yml",
-            ".markdownlintrc",
-        ]
-
-        # Search up to 5 levels up
-        for _ in range(5):
-            for config_name in config_names:
-                config_path = current_dir / config_name
-                if config_path.exists():
-                    try:
-                        if config_name.endswith((".json", ".jsonc", "rc")):
-                            with open(config_path, encoding="utf-8") as f:
-                                # Remove comments for .jsonc files
-                                content = f.read()
-                                if config_name.endswith(".jsonc"):
-                                    # Simple comment removal (not perfect but handles most cases)
-                                    lines = []
-                                    for content_line in content.split("\n"):
-                                        # Remove line comments
-                                        processed_line = content_line
-                                        if "//" in content_line:
-                                            processed_line = content_line[
-                                                : content_line.index("//")
-                                            ]
-                                        lines.append(processed_line)
-                                    content = "\n".join(lines)
-                                config = json.loads(content)
-                                # Check if MD060 is explicitly disabled
-                                if "MD060" in config:
-                                    return config["MD060"] is not False
-                                # If not specified, assume enabled (markdownlint default)
-                                return True
-                    except (json.JSONDecodeError, OSError):
-                        # If config can't be read, assume MD060 is enabled
-                        pass
-
-            # Move up one directory
-            if current_dir.parent == current_dir:
-                break  # Reached root
-            current_dir = current_dir.parent
-
-        # No config found, assume MD060 is enabled by default
-        return True
+        return self._check_rule_enabled("MD060")
 
     def _table_has_emojis(self, table: MarkdownTable) -> bool:
         """Check if table contains emoji characters.
@@ -342,6 +365,34 @@ class FileFixer:
                 if emoji_pattern.search(cell.content):
                     return True
         return False
+
+    def _parse_markdownlint_comment(
+        self, line: str, comment_type: str
+    ) -> set[str]:
+        """Parse markdownlint comment to extract rule names.
+
+        Args:
+            line: The line to parse
+            comment_type: Either "disable" or "enable"
+
+        Returns:
+            Set of rule names found in the comment (e.g., {"MD013", "MD060"})
+        """
+        # Match markdownlint comments with word boundaries for rule names
+        # Examples:
+        #   <!-- markdownlint-disable MD013 MD060 -->
+        #   <!-- markdownlint-enable MD013 -->
+        pattern = rf"<!--\s*markdownlint-{comment_type}\s+(.*?)\s*-->"
+        match = re.search(pattern, line)
+        if not match:
+            return set()
+
+        # Extract the rules part and split by whitespace
+        rules_text = match.group(1)
+        # Match MD followed by digits, using word boundaries to avoid false matches
+        rule_pattern = r"\bMD\d+\b"
+        rules = re.findall(rule_pattern, rules_text)
+        return set(rules)
 
     def fix_file(
         self, tables: list[MarkdownTable], dry_run: bool = False
@@ -496,9 +547,10 @@ class FileFixer:
                 has_disable = False
                 check_start = max(0, start_idx - 3)
                 for i in range(check_start, start_idx):
-                    if "markdownlint-disable" in lines[i] and all(
-                        rule in lines[i] for rule in disable_rules
-                    ):
+                    found_rules = self._parse_markdownlint_comment(
+                        lines[i], "disable"
+                    )
+                    if all(rule in found_rules for rule in disable_rules):
                         has_disable = True
                         break
 
@@ -506,9 +558,10 @@ class FileFixer:
                 has_enable = False
                 check_end = min(len(lines), end_idx + 3)
                 for i in range(end_idx, check_end):
-                    if "markdownlint-enable" in lines[i] and all(
-                        rule in lines[i] for rule in disable_rules
-                    ):
+                    found_rules = self._parse_markdownlint_comment(
+                        lines[i], "enable"
+                    )
+                    if all(rule in found_rules for rule in disable_rules):
                         has_enable = True
                         break
 
