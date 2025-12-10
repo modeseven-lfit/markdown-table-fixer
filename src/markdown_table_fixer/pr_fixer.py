@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from .git_config import GitConfigMode, configure_git_identity
 from .models import GitHubFixResult, MarkdownTable, PRInfo
+from .rule_disabler import filter_violations_by_disabled_rules
 from .table_fixer import FileFixer
 from .table_parser import MarkdownFileScanner, TableParser
 from .table_validator import TableValidator
@@ -152,12 +153,18 @@ class PRFixer:
         Returns:
             Tuple of (has_validation_issues, needs_md013)
         """
-        # Check for validation violations
-        validator = TableValidator(table)
+        # Check for validation violations (including MD013)
+        validator = TableValidator(table, max_line_length=max_line_length)
         violations = validator.validate()
+
+        # Filter out violations that are in sections with disabled rules
+        violations = filter_violations_by_disabled_rules(
+            violations, table.file_path
+        )
+
         has_validation_issues = len(violations) > 0
 
-        # Check if any line exceeds max_line_length
+        # Check if any line exceeds max_line_length (for MD013 comment insertion)
         table_lines = [row.raw_line for row in table.rows]
         max_len = (
             max(len(line.rstrip()) for line in table_lines)
@@ -167,6 +174,93 @@ class PRFixer:
         needs_md013 = max_len > max_line_length
 
         return has_validation_issues, needs_md013
+
+    def _process_file_tables(
+        self,
+        filename: str,
+        content: str,
+        max_line_length: int,
+    ) -> tuple[bool, bool, str]:
+        """Process tables in a file and apply fixes if needed.
+
+        This is a shared method used by both git and API update methods.
+
+        Args:
+            filename: File path/name
+            content: File content
+            max_line_length: Maximum line length for MD013 checking
+
+        Returns:
+            Tuple of (has_changes, has_issues, fixed_content)
+            - has_changes: Whether the content was modified
+            - has_issues: Whether validation issues were found
+            - fixed_content: The fixed content (may be same as input)
+        """
+        from pathlib import Path
+
+        from .table_fixer import FileFixer
+        from .table_parser import TableParser
+
+        # Parse tables from content
+        # Create temp file for parsing
+        temp_path = Path(f"/tmp/{filename}")
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(content, encoding="utf-8")
+
+        parser = TableParser(temp_path)
+        tables = parser.parse_file()
+
+        if not tables:
+            temp_path.unlink()
+            return False, False, content
+
+        # Check if any tables have issues or need MD013 comments
+        has_validation_issues = False
+        needs_md013 = False
+
+        for table in tables:
+            table_has_validation, table_needs_md013 = (
+                self._check_table_needs_fixes(table, max_line_length)
+            )
+
+            self.logger.debug(
+                f"Table at line {table.start_line}: validation_issues={table_has_validation}, needs_md013={table_needs_md013}"
+            )
+
+            if table_has_validation:
+                has_validation_issues = True
+
+            if table_needs_md013:
+                needs_md013 = True
+
+        # Skip if no issues and no MD013 needed
+        if not has_validation_issues and not needs_md013:
+            self.logger.debug(f"No issues found in {filename}")
+            temp_path.unlink()
+            return False, False, content
+
+        if needs_md013 and not has_validation_issues:
+            self.logger.info(
+                f"Tables in {filename} need MD013 comments (line length > {max_line_length})"
+            )
+
+        self.logger.info(f"Found issues in {filename}, applying fixes")
+
+        # Use FileFixer which handles both table formatting and MD013 comments
+        # Pass max_line_length explicitly since temp file can't find .markdownlintrc
+        file_fixer = FileFixer(temp_path, max_line_length=max_line_length)
+        file_fixer.fix_file(tables, dry_run=False)
+
+        # Read back the fixed content
+        fixed_content = temp_path.read_text(encoding="utf-8")
+
+        # Clean up temp file
+        temp_path.unlink()
+
+        # Check if content actually changed
+        has_changes = fixed_content != content
+
+        return has_changes, has_validation_issues, fixed_content
 
     def _create_error_pr_info(self, pr_url: str) -> PRInfo:
         """Create a dummy PRInfo for error responses.
@@ -1015,8 +1109,13 @@ class PRFixer:
                 lines = content.splitlines(keepends=True)
                 self.logger.debug(f"File has {len(lines)} lines")
 
-                parser = TableParser(filename)
-                tables = parser._find_and_parse_tables(lines)
+                # Create temp file to allow validation and filtering
+                temp_path = Path(f"/tmp/{filename}")
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path.write_text(content, encoding="utf-8")
+
+                parser = TableParser(temp_path)
+                tables = parser.parse_file()
 
                 self.logger.debug(f"Found {len(tables)} tables in {filename}")
 
@@ -1066,15 +1165,10 @@ class PRFixer:
 
                 self.logger.info(f"Found issues in {filename}, applying fixes")
 
-                # Write content to temp file and use FileFixer to handle both
-                # table fixes and MD013 comments
+                # Use FileFixer which handles both table formatting and MD013 comments
                 from .table_fixer import FileFixer
 
-                temp_path = Path(f"/tmp/{filename}")
-                temp_path.parent.mkdir(parents=True, exist_ok=True)
-                temp_path.write_text(content, encoding="utf-8")
-
-                # Use FileFixer which handles both table formatting and MD013 comments
+                # Temp file already created above during parsing
                 # Pass max_line_length explicitly since temp file can't find .markdownlintrc
                 file_fixer = FileFixer(
                     temp_path, max_line_length=max_line_length

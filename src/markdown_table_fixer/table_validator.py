@@ -11,13 +11,17 @@ from .models import MarkdownTable, TableRow, TableViolation, ViolationType
 class TableValidator:
     """Validate markdown table formatting."""
 
-    def __init__(self, table: MarkdownTable):
+    def __init__(
+        self, table: MarkdownTable, max_line_length: int | None = None
+    ):
         """Initialize validator with a table.
 
         Args:
             table: The table to validate
+            max_line_length: Maximum line length for MD013 checking (None to skip)
         """
         self.table = table
+        self.max_line_length = max_line_length
 
     def validate(self) -> list[TableViolation]:
         """Validate the table and return violations.
@@ -39,6 +43,10 @@ class TableValidator:
 
         # Check separator row format
         violations.extend(self._check_separator())
+
+        # Check line length (MD013)
+        if self.max_line_length is not None:
+            violations.extend(self._check_line_length())
 
         return violations
 
@@ -273,3 +281,40 @@ class TableValidator:
             display_pos += char_width if char_width >= 0 else 1
 
         return positions
+
+    def _check_line_length(self) -> list[TableViolation]:
+        """Check if table rows exceed maximum line length (MD013).
+
+        Returns:
+            List of line length violations
+        """
+        violations: list[TableViolation] = []
+
+        if self.max_line_length is None:
+            return violations
+
+        import wcwidth
+
+        for row in self.table.rows:
+            # Calculate display width of the line
+            line_width = wcwidth.wcswidth(row.raw_line.rstrip())
+            if line_width < 0:
+                # Fall back to character count if wcswidth fails
+                line_width = len(row.raw_line.rstrip())
+
+            if line_width > self.max_line_length:
+                violations.append(
+                    TableViolation(
+                        violation_type=ViolationType.LINE_TOO_LONG,
+                        line_number=row.line_number,
+                        column=0,
+                        message=(
+                            f"Line length {line_width} exceeds maximum "
+                            f"{self.max_line_length} (MD013)"
+                        ),
+                        file_path=self.table.file_path,
+                        table_start_line=self.table.start_line,
+                    )
+                )
+
+        return violations

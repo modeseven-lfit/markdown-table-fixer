@@ -38,6 +38,8 @@ class TableFixer:
             TableFix if changes were made, None otherwise
         """
         # First validate to find violations
+        # Don't pass max_line_length to validator here - MD013 violations are
+        # handled by adding disable comments, not by reformatting the table
         validator = TableValidator(self.table)
         violations = validator.validate()
 

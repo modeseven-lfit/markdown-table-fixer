@@ -32,6 +32,18 @@ class ViolationType(str, Enum):
     EXTRA_SPACE_RIGHT = "extra_space_right"
     INCONSISTENT_ALIGNMENT = "inconsistent_alignment"
     MALFORMED_SEPARATOR = "malformed_separator"
+    LINE_TOO_LONG = "line_too_long"
+
+    def to_md_rule(self) -> str:
+        """Convert violation type to markdownlint rule code.
+
+        Returns:
+            Markdownlint rule code (e.g., 'MD013', 'MD060')
+        """
+        if self == ViolationType.LINE_TOO_LONG:
+            return "MD013"
+        # All table formatting issues map to MD060 (table formatting)
+        return "MD060"
 
 
 @dataclass
@@ -111,6 +123,15 @@ class TableViolation:
     file_path: Path
     table_start_line: int = 0  # Line where the table starts
 
+    @property
+    def md_rule(self) -> str:
+        """Get the markdownlint rule code for this violation.
+
+        Returns:
+            Markdownlint rule code (e.g., 'MD013', 'MD060')
+        """
+        return self.violation_type.to_md_rule()
+
 
 @dataclass
 class TableFix:
@@ -143,6 +164,18 @@ class FileResult:
     def was_fixed(self) -> bool:
         """Check if any fixes were applied."""
         return len(self.fixes_applied) > 0
+
+    def get_violations_by_rule(self) -> dict[str, int]:
+        """Get violations grouped by markdownlint rule code.
+
+        Returns:
+            Dictionary mapping rule codes (e.g., 'MD013', 'MD060') to counts
+        """
+        rule_counts: dict[str, int] = {}
+        for violation in self.violations:
+            rule = violation.md_rule
+            rule_counts[rule] = rule_counts.get(rule, 0) + 1
+        return rule_counts
 
 
 @dataclass
