@@ -15,6 +15,7 @@ from rich.logging import RichHandler
 import typer
 
 from ._version import __version__
+from .blocked_pr_scanner import BlockedPRScanner
 from .exceptions import (
     FileAccessError,
     TableParseError,
@@ -295,6 +296,11 @@ def github(
         "--include-drafts",
         help="Include draft PRs in scan",
     ),
+    no_blocked_only: bool = typer.Option(
+        False,
+        "--no-blocked-only",
+        help="Process ALL PRs, not just blocked/unmergeable ones (default: only process blocked PRs)",
+    ),
     debug_org: bool = typer.Option(
         False,
         "--debug-org",
@@ -434,6 +440,7 @@ def github(
                 conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
                 include_drafts=include_drafts,
+                blocked_only=not no_blocked_only,
                 debug_org=debug_org,
                 quiet=quiet,
                 git_config_mode=git_config_mode,
@@ -496,6 +503,7 @@ async def _scan_organization(
     conflict_strategy: str = "fail",
     dry_run: bool = False,
     include_drafts: bool = False,
+    blocked_only: bool = True,
     debug_org: bool = False,
     quiet: bool = False,
     git_config_mode: str = GitConfigMode.USER_INHERIT,
@@ -518,7 +526,6 @@ async def _scan_organization(
                 None if quiet else ProgressTracker(org, show_pr_stats=True)
             )
 
-            scanner = PRScanner(client, progress_tracker=progress_tracker)
             fixer = PRFixer(client, git_config_mode=git_config_mode)
 
             # Inform about update method
@@ -540,69 +547,138 @@ async def _scan_organization(
                         console.print(
                             "Git identity: User (inheriting signing config)"
                         )
+
+                # Show filtering status
+                if not blocked_only:
+                    console.print(
+                        "⚠️  Processing ALL PRs (not just blocked ones)"
+                    )
+                else:
+                    console.print(
+                        "🚫 Only processing blocked/unmergeable PRs (default)"
+                    )
                 console.print()
 
             # Collect PRs from async generator
             prs_to_process = []
 
-            if progress_tracker:
-                progress_tracker.start()
+            # Use BlockedPRScanner (dependamerge) when filtering to blocked PRs only
+            # This ensures consistent blocking logic with other tools
+            if blocked_only:
+                # Use dependamerge's GitHubService for blocked PR detection
+                blocked_scanner = BlockedPRScanner(
+                    token=token,
+                    progress_tracker=progress_tracker,
+                    max_repo_tasks=10,
+                )
 
-            # Scanner yields only PRs that are blocked by markdown/lint check failures
-            # (it counts repos internally using GraphQL)
-            try:
-                async for (
-                    owner,
-                    repo_name,
-                    pr_data,
-                ) in scanner.scan_organization(
-                    org, include_drafts=include_drafts
-                ):
-                    pr_info = PRInfo(
-                        number=pr_data.get("number", 0),
-                        title=pr_data.get("title", ""),
-                        repository=f"{owner}/{repo_name}",
-                        url=pr_data.get("html_url", ""),
-                        author=pr_data.get("user", {}).get("login", ""),
-                        is_draft=pr_data.get("draft", False),
-                        head_ref=pr_data.get("head", {}).get("ref", ""),
-                        head_sha=pr_data.get("head", {}).get("sha", ""),
-                        base_ref=pr_data.get("base", {}).get("ref", ""),
-                        mergeable=pr_data.get("mergeable_state", ""),
-                        merge_state_status=pr_data.get(
-                            "merge_state_status", ""
-                        ),
+                # Note: progress_tracker.start() is called by scanner internally
+                try:
+                    async for (
+                        owner,
+                        repo_name,
+                        _pr_data,
+                        unmergeable_pr,
+                    ) in blocked_scanner.scan_organization_for_blocked_prs(
+                        org, include_drafts=include_drafts
+                    ):
+                        pr_info = PRInfo(
+                            number=unmergeable_pr.pr_number,
+                            title=unmergeable_pr.title,
+                            repository=f"{owner}/{repo_name}",
+                            url=unmergeable_pr.url,
+                            author=unmergeable_pr.author,
+                            is_draft=False,  # Drafts are filtered by dependamerge
+                            head_ref="",  # Not provided by dependamerge
+                            head_sha="",  # Not provided by dependamerge
+                            base_ref="",  # Not provided by dependamerge
+                            mergeable="",  # Will be determined by blocking reasons
+                            merge_state_status="",  # Will be determined by blocking reasons
+                        )
+
+                        # Extract blocking reasons from dependamerge
+                        blocking_reasons = [
+                            r.description for r in unmergeable_pr.reasons
+                        ]
+
+                        blocked_pr = BlockedPR(
+                            pr_info=pr_info,
+                            blocking_reasons=blocking_reasons,
+                            has_markdown_issues=True,  # Will be verified when we try to fix
+                        )
+
+                        prs_to_process.append(blocked_pr)
+                finally:
+                    await blocked_scanner.close()
+            else:
+                # Use original PRScanner for all PRs (no blocking filter)
+                scanner = PRScanner(client, progress_tracker=progress_tracker)
+
+                if progress_tracker:
+                    progress_tracker.start()
+
+                # Scanner yields PRs (it counts repos internally using GraphQL)
+                try:
+                    async for (
+                        owner,
+                        repo_name,
+                        pr_data,
+                    ) in scanner.scan_organization(
+                        org, include_drafts=include_drafts
+                    ):
+                        pr_info = PRInfo(
+                            number=pr_data.get("number", 0),
+                            title=pr_data.get("title", ""),
+                            repository=f"{owner}/{repo_name}",
+                            url=pr_data.get("html_url", ""),
+                            author=pr_data.get("user", {}).get("login", ""),
+                            is_draft=pr_data.get("draft", False),
+                            head_ref=pr_data.get("head", {}).get("ref", ""),
+                            head_sha=pr_data.get("head", {}).get("sha", ""),
+                            base_ref=pr_data.get("base", {}).get("ref", ""),
+                            mergeable=pr_data.get("mergeable_state", ""),
+                            merge_state_status=pr_data.get(
+                                "merge_state_status", ""
+                            ),
+                        )
+
+                        blocked_pr = BlockedPR(
+                            pr_info=pr_info,
+                            blocking_reasons=["Needs markdown table fixes"],
+                            has_markdown_issues=True,  # Will be verified when we try to fix
+                        )
+
+                        prs_to_process.append(blocked_pr)
+                except Exception as scan_error:
+                    # Stop progress tracker on error
+                    if progress_tracker:
+                        progress_tracker.stop()
+                    console.print(
+                        f"\n[yellow]⚠️  Scanning interrupted: {scan_error}[/yellow]"
+                    )
+                    console.print(
+                        "[yellow]Processing PRs found so far...[/yellow]"
                     )
 
-                    blocked_pr = BlockedPR(
-                        pr_info=pr_info,
-                        blocking_reasons=["Failing markdown/lint checks"],
-                        has_markdown_issues=True,  # Will be verified when we try to fix
-                    )
-
-                    prs_to_process.append(blocked_pr)
-            except Exception as scan_error:
-                # Stop progress tracker on error
+                # Stop progress tracker
                 if progress_tracker:
                     progress_tracker.stop()
-                console.print(
-                    f"\n[yellow]⚠️  Scanning interrupted: {scan_error}[/yellow]"
-                )
-                console.print("[yellow]Processing PRs found so far...[/yellow]")
-
-            # Stop progress tracker
-            if progress_tracker:
-                progress_tracker.stop()
 
             if not quiet:
+                pr_type = "blocked " if blocked_only else ""
                 console.print(
-                    f"\n📊 Found {len(prs_to_process)} blocked PRs with potential markdown issues"
+                    f"\n📊 Found {len(prs_to_process)} {pr_type}PRs with potential markdown issues"
                 )
 
             if not prs_to_process:
-                console.print(
-                    "\n[green]✅ No blocked PRs with markdown table issues found![/green]"
-                )
+                if blocked_only:
+                    console.print(
+                        "\n[green]✅ No blocked PRs with markdown table issues found![/green]"
+                    )
+                else:
+                    console.print(
+                        "\n[green]✅ No PRs with markdown table issues found![/green]"
+                    )
                 return
 
             # Display PRs

@@ -188,11 +188,12 @@ class TableValidator:
     def _calculate_column_widths(self) -> list[int]:
         """Calculate the maximum width needed for each column.
 
-        For MD060 compliance, we calculate widths based on character length.
-        This uses string length, not display width or byte length.
+        For MD060 compliance, we calculate widths based on display width.
+        This uses display width (wcwidth), not character length, to properly
+        handle Unicode characters like emojis that have different visual widths.
 
         Returns:
-            List of column widths (in characters)
+            List of column widths (in display width units)
         """
         if not self.table.rows:
             return []
@@ -206,8 +207,8 @@ class TableValidator:
             for row in self.table.rows:
                 if col_idx < len(row.cells):
                     cell = row.cells[col_idx]
-                    # Use character length for MD060 compliance (pipe alignment)
-                    content_width = len(cell.content.strip())
+                    # Use display width for MD060 compliance (visual pipe alignment)
+                    content_width = cell.display_width
                     max_width = max(max_width, content_width)
             widths.append(max_width)
 
@@ -217,10 +218,10 @@ class TableValidator:
         """Calculate expected positions of pipes based on column widths.
 
         Args:
-            column_widths: Width of each column (in characters)
+            column_widths: Width of each column (in display width units)
 
         Returns:
-            List of pipe positions (in characters)
+            List of pipe positions (in display width units)
         """
         positions: list[int] = [0]  # Starting pipe at position 0
         current_pos = 0
@@ -241,10 +242,13 @@ class TableValidator:
             row: The row to analyze
 
         Returns:
-            List of pipe positions (in characters)
+            List of pipe positions (in display width units)
         """
+        import wcwidth
+
         positions: list[int] = []
         line = row.raw_line
+        display_pos = 0
 
         for idx, char in enumerate(line):
             if char == "|":
@@ -256,7 +260,16 @@ class TableValidator:
                     j -= 1
                 if backslash_count % 2 == 1:
                     # Odd number of backslashes means the pipe is escaped
+                    display_pos += (
+                        wcwidth.wcwidth(char)
+                        if wcwidth.wcwidth(char) >= 0
+                        else 1
+                    )
                     continue
-                positions.append(idx)
+                positions.append(display_pos)
+
+            # Update display position based on character width
+            char_width = wcwidth.wcwidth(char)
+            display_pos += char_width if char_width >= 0 else 1
 
         return positions
