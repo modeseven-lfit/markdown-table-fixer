@@ -32,6 +32,7 @@ from .models import (
 from .pr_fixer import PRFixer
 from .pr_scanner import PRScanner
 from .progress_tracker import ProgressTracker
+from .rule_disabler import filter_violations_by_disabled_rules
 from .table_fixer import FileFixer
 from .table_parser import MarkdownFileScanner, TableParser
 from .table_validator import TableValidator
@@ -140,10 +141,10 @@ def lint(
         "--check",
         help="Exit with error if issues found (CI mode)",
     ),
-    max_line_length: int = typer.Option(
-        80,
+    max_line_length: int | None = typer.Option(
+        None,
         "--max-line-length",
-        help="Maximum line length before adding MD013 disable comments",
+        help="Maximum line length before adding MD013 disable comments (default: auto-detect from .markdownlintrc)",
     ),
     auto_fix: bool = typer.Option(
         False,
@@ -176,6 +177,12 @@ def lint(
     scan_path = path
 
     logger.debug(f"Starting lint scan of: {scan_path}")
+
+    # Auto-detect max_line_length if not specified
+    if max_line_length is None:
+        max_line_length = _detect_max_line_length(scan_path)
+        logger.debug(f"Auto-detected max_line_length: {max_line_length}")
+
     logger.debug(
         f"Options: auto_fix={auto_fix}, max_line_length={max_line_length}"
     )
@@ -765,8 +772,82 @@ async def _scan_organization(
         raise typer.Exit(1) from e
 
 
+def _detect_max_line_length(scan_path: Path) -> int:
+    """Auto-detect max_line_length from markdownlint config.
+
+    Args:
+        scan_path: Path to scan for markdownlint config
+
+    Returns:
+        Configured line length, or 80 if not configured
+    """
+    import json
+
+    import yaml
+
+    # Look for markdownlint config files in the scan path and parent directories
+    current_dir = scan_path if scan_path.is_dir() else scan_path.parent
+    config_names = [
+        ".markdownlint.json",
+        ".markdownlint.jsonc",
+        ".markdownlint.yaml",
+        ".markdownlint.yml",
+        ".markdownlintrc",
+    ]
+
+    # Search up to 5 levels up
+    for _ in range(5):
+        for config_name in config_names:
+            config_path = current_dir / config_name
+            if config_path.exists():
+                try:
+                    with open(config_path, encoding="utf-8") as f:
+                        if config_name.endswith((".yaml", ".yml")):
+                            config = yaml.safe_load(f)
+                            # yaml.safe_load returns None for empty files
+                            if config is None:
+                                config = {}
+                        elif config_name.endswith((".json", ".jsonc", "rc")):
+                            content = f.read()
+                            # Simple JSONC comment removal for .jsonc files
+                            if config_name.endswith(".jsonc"):
+                                # Remove // comments from each line
+                                lines = [
+                                    line[: line.find("//")]
+                                    if "//" in line
+                                    else line
+                                    for line in content.split("\n")
+                                ]
+                                content = "\n".join(lines)
+                            config = json.loads(content)
+                        else:
+                            continue
+
+                        # Check if MD013 has line_length configured
+                        if "MD013" in config:
+                            md013_config = config["MD013"]
+                            if (
+                                isinstance(md013_config, dict)
+                                and "line_length" in md013_config
+                            ):
+                                line_length = md013_config["line_length"]
+                                if isinstance(line_length, int):
+                                    return line_length
+                except (json.JSONDecodeError, yaml.YAMLError, OSError):
+                    # If config can't be read, continue searching
+                    pass
+
+        # Move up one directory
+        if current_dir.parent == current_dir:
+            break  # Reached root
+        current_dir = current_dir.parent
+
+    # No config found or line_length not specified, return default
+    return 80
+
+
 def _process_file(
-    file_path: Path, fix: bool = False, max_line_length: int = 80
+    file_path: Path, fix: bool = False, max_line_length: int | None = None
 ) -> FileResult:
     """Process a single markdown file.
 
@@ -774,6 +855,7 @@ def _process_file(
         file_path: Path to the file
         fix: Whether to fix issues
         max_line_length: Maximum line length before adding MD013 disable
+                        (None = auto-detect from markdownlint config)
 
     Returns:
         File processing result
@@ -795,16 +877,29 @@ def _process_file(
             logger.debug(
                 f"Validating table {idx + 1} at line {table.start_line}"
             )
-            validator = TableValidator(table)
+            validator = TableValidator(table, max_line_length=max_line_length)
             violations = validator.validate()
             result.violations.extend(violations)
-            logger.debug(f"Table {idx + 1}: {len(violations)} violations found")
+            logger.debug(
+                f"Table {idx + 1}: {len(violations)} violations found (before filtering)"
+            )
 
             if violations:
                 for v in violations:
                     logger.debug(
                         f"  - {v.violation_type.value} at line {v.line_number}, col {v.column}: {v.message}"
                     )
+
+        # Filter out violations that are in sections with disabled rules
+        original_violation_count = len(result.violations)
+        result.violations = filter_violations_by_disabled_rules(
+            result.violations, file_path
+        )
+        filtered_count = original_violation_count - len(result.violations)
+        if filtered_count > 0:
+            logger.debug(
+                f"Filtered out {filtered_count} violations due to markdownlint disable comments"
+            )
 
         # Fix if requested
         # Always run fixer if fix=True to add MD013 comments even when no violations
@@ -889,8 +984,19 @@ def _output_text_results(result: ScanResult, quiet: bool) -> None:
                 # Count total violations for this file
                 violation_count = len(file_result.violations)
                 error_word = "Error" if violation_count == 1 else "Errors"
+
+                # Get violations by rule code
+                rule_counts = file_result.get_violations_by_rule()
+
+                # Format the rule breakdown (e.g., "MD013 (2), MD060 (3)")
+                rule_parts = []
+                for rule in sorted(rule_counts.keys()):
+                    count = rule_counts[rule]
+                    rule_parts.append(f"{rule} ({count})")
+                rule_breakdown = ", ".join(rule_parts)
+
                 console.print(
-                    f"  {file_result.file_path} [{violation_count} {error_word}]"
+                    f"  {file_result.file_path} [{violation_count} {error_word}: {rule_breakdown}]"
                 )
             elif file_result.error:
                 # File has a parsing or processing error

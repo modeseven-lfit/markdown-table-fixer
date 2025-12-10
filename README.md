@@ -56,6 +56,54 @@ Auto-fix issues found:
 markdown-table-fixer lint --auto-fix
 ```
 
+#### Respecting Markdownlint Disable Comments
+
+The tool automatically respects markdownlint disable/enable comments in your
+markdown files. Violations within disabled sections are not reported:
+
+```markdown
+<!-- markdownlint-disable MD013 -->
+| Long table that exceeds line length... |
+<!-- markdownlint-enable MD013 -->
+
+<!-- markdownlint-disable MD013 MD060 -->
+| Table with both line length and formatting issues disabled |
+<!-- markdownlint-enable MD013 MD060 -->
+```
+
+This behavior is consistent across both `lint` and `github` commands,
+ensuring that locally suppressed violations are not reported or fixed when
+processing pull requests.
+
+#### Violation Reporting
+
+The lint command provides detailed violation reporting by markdownlint rule code:
+
+```bash
+$ markdown-table-fixer lint .
+🔍 Scanning: .
+
+Summary:
+  Files scanned: 10
+  Files with issues: 1
+  Total violations: 66
+
+Files with issues:
+  README.md [66 Errors: MD013 (61), MD060 (5)]
+```
+
+The tool reports violations categorized by markdownlint rule:
+
+- **MD013**: Line length exceeds limit (auto-detected from `.markdownlintrc`)
+- **MD060**: Table formatting issues (misaligned pipes, spacing, etc.)
+
+**Note:** Violations in sections with markdownlint disable comments are
+automatically filtered out and not reported.
+
+The line length limit is automatically detected from your markdownlint
+configuration file (`.markdownlint.json`, `.markdownlint.yaml`, etc.). If no
+configuration file exists, the default is 80 characters.
+
 ### GitHub Mode
 
 The `github` command intelligently handles both individual pull requests and
