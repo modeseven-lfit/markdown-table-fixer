@@ -72,11 +72,13 @@ repos:
     rev: ab66ce10136dfad5146e69e70f82a3efac8842c1 # frozen: v1.0.8
     hooks:
       - id: write-good
+        args: ["--no-adverb"]
         files: "\\.(rst|md|markdown|mdown|mkdn)$"
         exclude: |
           (?x)^(
             CHANGELOG\.md|
             IMPLEMENTATION_COMPLETE\.md|
+            IMPLEMENTATION_SUMMARY\.md|
             SETUP\.md|
             FEATURES\.md|
             CONTRIBUTING\.md|

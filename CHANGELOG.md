@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `--pr-changes-only` flag to limit processing to files changed in the PR
 - Initial release of markdown-table-fixer
 - Lint mode for scanning and fixing markdown table formatting issues
 - Support for detecting misaligned pipes in markdown tables
@@ -23,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Text and JSON output formats
 - Pre-commit hook integration
 - Comprehensive test suite
+
+### Changed
+
+- **BREAKING**: API method now scans all markdown files by default
+  (previously scanned PR changes only)
+  - Both API and Git methods now have consistent behavior
+  - Use `--pr-changes-only` flag to restore previous API method behavior
+- Git method can now limit scope to PR changes with `--pr-changes-only` flag
 - CLI with Typer for user-friendly interface
 - Rich terminal output with progress tracking
 - File scanner for recursive markdown file discovery
