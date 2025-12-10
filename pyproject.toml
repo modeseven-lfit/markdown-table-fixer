@@ -10,7 +10,7 @@ name = "markdown-table-fixer"
 dynamic = ["version"]
 description = "Markdown table formatter and linter with GitHub integration"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "The Linux Foundation", email = "releng@linuxfoundation.org"},
@@ -27,30 +27,31 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Text Processing :: Markup :: Markdown",
 ]
 dependencies = [
-    "typer>=0.15.0",
-    "rich>=13.9.4",
-    "httpx[http2]>=0.28.0",
-    "pydantic>=2.10.3",
-    "aiolimiter>=1.2.0",
-    "tenacity>=9.0.0",
-    "wcwidth>=0.2.13",
-    "pyyaml>=6.0.0",
+    "typer>=0.20.0",
+    "rich>=14.2.0",
+    "httpx[http2]>=0.28.1",
+    "pydantic>=2.12.5",
+    "aiolimiter>=1.2.1",
+    "tenacity>=9.1.2",
+    "wcwidth>=0.2.14",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3.4",
-    "pytest-cov>=6.0.0",
-    "pytest-asyncio>=0.25.0",
-    "pytest-mock>=3.14.0",
-    "mypy>=1.13.0",
-    "ruff>=0.8.4",
-    "pre-commit>=4.0.1",
-    "types-PyYAML>=6.0.0",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "pytest-asyncio>=1.1.0",
+    "pytest-mock>=3.15.1",
+    "mypy>=1.17.1",
+    "ruff>=0.14.8",
+    "pre-commit>=4.5.0",
+    "types-PyYAML>=6.0.12.20250915",
 ]
 
 [project.urls]
@@ -74,7 +75,7 @@ packages = ["src/markdown_table_fixer"]
 include = ["src", "README.md", "LICENSE*", "pyproject.toml", ".pre-commit-hooks.yaml"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 80
 exclude = [
     "src/markdown_table_fixer/_version.py",
@@ -118,7 +119,7 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

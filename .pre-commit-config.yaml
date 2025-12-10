@@ -87,7 +87,8 @@ repos:
             PROJECT_SUMMARY\.md|
             EMOJI_TESTING\.md|
             examples/bad_tables\.md|
-            examples/emoji_tables\.md
+            examples/emoji_tables\.md|
+            tests/README\.md
           )$
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
@@ -150,7 +151,7 @@ repos:
       - id: pytest
         name: pytest
         entry: uv
-        args: [run, --no-project, pytest, --tb=short, -q]
+        args: [run, pytest, --tb=short, -q, -x, --no-cov]
         language: system
         pass_filenames: false
         always_run: true
