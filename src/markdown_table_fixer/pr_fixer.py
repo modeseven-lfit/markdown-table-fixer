@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from .github_client import GitHubClient
 
 from .git_config import GitConfigMode, configure_git_identity
-from .models import GitHubFixResult, PRInfo
-from .table_fixer import FileFixer, TableFixer
+from .models import GitHubFixResult, MarkdownTable, PRInfo
+from .table_fixer import FileFixer
 from .table_parser import MarkdownFileScanner, TableParser
 from .table_validator import TableValidator
 
@@ -64,6 +64,109 @@ class PRFixer:
         )
 
         return sanitized
+
+    async def _get_markdownlint_max_line_length(
+        self, owner: str, repo: str, branch: str
+    ) -> int:
+        """Fetch markdownlint config from repository and extract MD013 line_length.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            branch: Branch name
+
+        Returns:
+            Configured line length, or 80 if not found
+        """
+        config_files = [
+            ".markdownlintrc",
+            ".markdownlint.json",
+            ".markdownlint.jsonc",
+            ".markdownlint.yaml",
+            ".markdownlint.yml",
+        ]
+
+        import json
+
+        import yaml
+
+        for config_file in config_files:
+            try:
+                # Fetch config file from repository using GitHubClient
+                content = await self.client.get_file_content(
+                    owner, repo, config_file, branch
+                )
+
+                # Parse based on file extension
+                config = None
+                if config_file.endswith((".yaml", ".yml")):
+                    config = yaml.safe_load(content)
+                    if config is None:
+                        config = {}
+                elif config_file.endswith((".json", ".jsonc", "rc")):
+                    if config_file.endswith(".jsonc"):
+                        # Remove comments from JSONC
+                        import re
+
+                        content = re.sub(
+                            r"//.*$", "", content, flags=re.MULTILINE
+                        )
+                        content = re.sub(
+                            r"/\*.*?\*/", "", content, flags=re.DOTALL
+                        )
+                    config = json.loads(content)
+
+                # Check if MD013 has line_length configured
+                if config and "MD013" in config:
+                    md013_config = config["MD013"]
+                    if (
+                        isinstance(md013_config, dict)
+                        and "line_length" in md013_config
+                    ):
+                        line_length = md013_config["line_length"]
+                        if isinstance(line_length, int):
+                            self.logger.info(
+                                f"Found markdownlint config in {config_file}: MD013 line_length={line_length}"
+                            )
+                            return line_length
+
+            except Exception as e:
+                self.logger.debug(f"Could not fetch {config_file}: {e}")
+                continue
+
+        # Default to 80 if no config found
+        self.logger.debug(
+            "No markdownlint config found, using default line_length=80"
+        )
+        return 80
+
+    def _check_table_needs_fixes(
+        self, table: MarkdownTable, max_line_length: int
+    ) -> tuple[bool, bool]:
+        """Check if a table needs fixes or MD013 comments.
+
+        Args:
+            table: The table to check
+            max_line_length: Maximum line length before needing MD013 disable
+
+        Returns:
+            Tuple of (has_validation_issues, needs_md013)
+        """
+        # Check for validation violations
+        validator = TableValidator(table)
+        violations = validator.validate()
+        has_validation_issues = len(violations) > 0
+
+        # Check if any line exceeds max_line_length
+        table_lines = [row.raw_line for row in table.rows]
+        max_len = (
+            max(len(line.rstrip()) for line in table_lines)
+            if table_lines
+            else 0
+        )
+        needs_md013 = max_len > max_line_length
+
+        return has_validation_issues, needs_md013
 
     def _create_error_pr_info(self, pr_url: str) -> PRInfo:
         """Create a dummy PRInfo for error responses.
@@ -411,27 +514,52 @@ class PRFixer:
                     if not tables:
                         continue
 
-                    # Check if any tables have issues
-                    has_issues = False
-                    for table in tables:
-                        validator = TableValidator(table)
-                        violations = validator.validate()
-                        if violations:
-                            has_issues = True
-                            break
+                    # Check if any tables have issues or need MD013 comments
+                    # Auto-detect max line length from markdownlint config in the repo
+                    if not hasattr(self, "_cached_max_line_length"):
+                        self._cached_max_line_length = (
+                            await self._get_markdownlint_max_line_length(
+                                owner, repo, pr_info.head_ref
+                            )
+                        )
+                    max_line_length = self._cached_max_line_length
 
-                    if not has_issues:
+                    has_issues = False
+                    needs_md013 = False
+
+                    for table in tables:
+                        has_validation_issues, table_needs_md013 = (
+                            self._check_table_needs_fixes(
+                                table, max_line_length
+                            )
+                        )
+
+                        if has_validation_issues:
+                            has_issues = True
+
+                        if table_needs_md013:
+                            needs_md013 = True
+
+                    # Skip if no issues and no MD013 needed
+                    if not has_issues and not needs_md013:
                         continue
 
-                    # Fix the file
-                    fixer = FileFixer(md_file, max_line_length=80)
+                    # Fix the file (auto-detect line length from markdownlint config)
+                    fixer = FileFixer(md_file)
                     fixes = fixer.fix_file(tables, dry_run=False)
 
+                    # If we got here, either the table had validation issues or needed MD013 comments
+                    # In either case, fix_file was called and may have modified the file
+                    # (even if fixes list is empty, MD013 comments may have been added)
+                    files_modified.append(md_file)
                     if fixes:
-                        files_modified.append(md_file)
                         tables_fixed += len(fixes)
                         self.logger.debug(
                             f"Fixed {len(fixes)} table(s) in {md_file.name}"
+                        )
+                    else:
+                        self.logger.debug(
+                            f"Added MD013 comments to {md_file.name}"
                         )
 
                 # Handle no files modified or dry-run mode
@@ -896,38 +1024,68 @@ class PRFixer:
                     self.logger.debug(f"No tables found in {filename}")
                     continue
 
-                # Check if any tables have issues
+                # Check if any tables have issues or need MD013 comments
+                # Fetch max line length from repository's markdownlint config
+                if not hasattr(self, "_cached_max_line_length"):
+                    self._cached_max_line_length = (
+                        await self._get_markdownlint_max_line_length(
+                            owner, repo, branch
+                        )
+                    )
+                max_line_length = self._cached_max_line_length
+
                 has_issues = False
+                needs_md013 = False
                 fixes_applied = 0
 
                 for table in tables:
-                    validator = TableValidator(table)
-                    violations = validator.validate()
-
-                    self.logger.debug(
-                        f"Table at line {table.start_line}: {len(violations)} violations"
+                    has_validation_issues, table_needs_md013 = (
+                        self._check_table_needs_fixes(table, max_line_length)
                     )
 
-                    if violations:
+                    self.logger.debug(
+                        f"Table at line {table.start_line}: validation_issues={has_validation_issues}, needs_md013={table_needs_md013}"
+                    )
+
+                    if has_validation_issues:
                         has_issues = True
                         fixes_applied += 1
 
-                if not has_issues:
+                    if table_needs_md013:
+                        needs_md013 = True
+
+                # Skip if no issues and no MD013 needed
+                if not has_issues and not needs_md013:
                     self.logger.debug(f"No issues found in {filename}")
                     continue
 
+                if needs_md013 and not has_issues:
+                    self.logger.info(
+                        f"Tables in {filename} need MD013 comments (line length > {max_line_length})"
+                    )
+
                 self.logger.info(f"Found issues in {filename}, applying fixes")
 
-                # Apply fixes
-                fixed_content = content
-                for table in tables:
-                    fixer = TableFixer(table)
-                    fix = fixer.fix()
+                # Write content to temp file and use FileFixer to handle both
+                # table fixes and MD013 comments
+                from .table_fixer import FileFixer
 
-                    if fix:
-                        fixed_content = fixed_content.replace(
-                            fix.original_content, fix.fixed_content
-                        )
+                temp_path = Path(f"/tmp/{filename}")
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path.write_text(content, encoding="utf-8")
+
+                # Use FileFixer which handles both table formatting and MD013 comments
+                # Pass max_line_length explicitly since temp file can't find .markdownlintrc
+                file_fixer = FileFixer(
+                    temp_path, max_line_length=max_line_length
+                )
+                file_fixer.fix_file(tables, dry_run=False)
+
+                # Read back the fixed content
+                fixed_content = temp_path.read_text(encoding="utf-8")
+
+                # Clean up temp file
+                temp_path.unlink()
 
                 # Only collect if content changed
                 if fixed_content != content:

@@ -90,11 +90,12 @@ class TableFixer:
     def _calculate_column_widths(self) -> list[int]:
         """Calculate the maximum width needed for each column.
 
-        For MD060 compliance, we need to align pipes by character position.
-        This uses string length, not display width or byte length.
+        For MD060 compliance, we need to align pipes by display width.
+        This uses display width (wcwidth), not character length, to properly
+        handle Unicode characters like emojis that have different visual widths.
 
         Returns:
-            List of column widths (in characters)
+            List of column widths (in display width units)
         """
         if not self.table.rows:
             return []
@@ -112,8 +113,8 @@ class TableFixer:
                     if row.is_separator:
                         content_width = 3  # Minimum "---"
                     else:
-                        # Use character length for MD060 compliance (pipe alignment)
-                        content_width = len(cell.content.strip())
+                        # Use display width for MD060 compliance (visual pipe alignment)
+                        content_width = cell.display_width
                     max_width = max(max_width, content_width)
             widths.append(max_width)
 
@@ -124,22 +125,31 @@ class TableFixer:
 
         Args:
             row: The row to format
-            column_widths: Width of each column (in characters)
+            column_widths: Width of each column (in display width units)
 
         Returns:
             Formatted row string
         """
+        import wcwidth
+
         parts: list[str] = []
 
         for idx, cell in enumerate(row.cells):
             content = cell.content.strip()
             width = (
-                column_widths[idx] if idx < len(column_widths) else len(content)
+                column_widths[idx]
+                if idx < len(column_widths)
+                else cell.display_width
             )
 
-            # Pad content to column width based on character length
-            # This ensures pipes align by character position (MD060 compliance)
-            padded = content.ljust(width)
+            # Pad content to column width based on display width
+            # This ensures pipes align by visual position (MD060 compliance)
+            content_display_width = wcwidth.wcswidth(content)
+            if content_display_width < 0:
+                content_display_width = len(content)
+
+            padding_needed = width - content_display_width
+            padded = content + (" " * padding_needed)
             parts.append(f" {padded} ")
 
         return "|" + "|".join(parts) + "|"
@@ -188,15 +198,21 @@ class TableFixer:
 class FileFixer:
     """Fix all tables in a markdown file."""
 
-    def __init__(self, file_path: Path, max_line_length: int = 80):
+    def __init__(self, file_path: Path, max_line_length: int | None = None):
         """Initialize fixer with file path.
 
         Args:
             file_path: Path to the markdown file
             max_line_length: Maximum line length before adding MD013 disable
+                           (None = auto-detect from markdownlint config, default 80)
         """
         self.file_path = file_path
-        self.max_line_length = max_line_length
+        # Auto-detect line length from config if not specified
+        self.max_line_length = (
+            max_line_length
+            if max_line_length is not None
+            else self._get_md013_line_length()
+        )
         self._md013_enabled = self._check_md013_enabled()
         self._md060_enabled = self._check_md060_enabled()
 
@@ -324,6 +340,68 @@ class FileFixer:
             True if MD013 checking is enabled, False otherwise
         """
         return self._check_rule_enabled("MD013")
+
+    def _get_md013_line_length(self) -> int:
+        """Get MD013 line_length from markdownlint config.
+
+        Returns:
+            Configured line length, or 80 if not configured
+        """
+        # Look for markdownlint config files in parent directories
+        current_dir = self.file_path.parent
+        config_names = [
+            ".markdownlint.json",
+            ".markdownlint.jsonc",
+            ".markdownlint.yaml",
+            ".markdownlint.yml",
+            ".markdownlintrc",
+        ]
+
+        # Search up to 5 levels up
+        for _ in range(5):
+            for config_name in config_names:
+                config_path = current_dir / config_name
+                if config_path.exists():
+                    try:
+                        with open(config_path, encoding="utf-8") as f:
+                            if config_name.endswith((".yaml", ".yml")):
+                                config = yaml.safe_load(f)
+                                # yaml.safe_load returns None for empty files
+                                if config is None:
+                                    config = {}
+                            elif config_name.endswith(
+                                (".json", ".jsonc", "rc")
+                            ):
+                                content = f.read()
+                                if config_name.endswith(".jsonc"):
+                                    content = self._remove_jsonc_comments(
+                                        content
+                                    )
+                                config = json.loads(content)
+                            else:
+                                continue
+
+                            # Check if MD013 has line_length configured
+                            if "MD013" in config:
+                                md013_config = config["MD013"]
+                                if (
+                                    isinstance(md013_config, dict)
+                                    and "line_length" in md013_config
+                                ):
+                                    line_length = md013_config["line_length"]
+                                    if isinstance(line_length, int):
+                                        return line_length
+                    except (json.JSONDecodeError, yaml.YAMLError, OSError):
+                        # If config can't be read, use default
+                        pass
+
+            # Move up one directory
+            if current_dir.parent == current_dir:
+                break  # Reached root
+            current_dir = current_dir.parent
+
+        # No config found or line_length not specified, return default
+        return 80
 
     def _check_md060_enabled(self) -> bool:
         """Check if MD060 is enabled in markdownlint config.
