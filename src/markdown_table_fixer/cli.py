@@ -128,6 +128,12 @@ def lint(
         "-q",
         help="Suppress output except errors",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose output with DEBUG logging",
+    ),
     check: bool = typer.Option(
         False,
         "--check",
@@ -159,9 +165,19 @@ def lint(
       markdown-table-fixer lint --auto-fix         # Scan and fix issues
       markdown-table-fixer lint /path/to/docs      # Scan specific path
       markdown-table-fixer lint --check            # CI mode: fail if issues found
+      markdown-table-fixer lint --verbose          # Enable DEBUG logging
     """
+    # Setup logging based on flags
+    setup_logging(quiet=quiet, verbose=verbose)
+    logger = logging.getLogger("markdown_table_fixer")
+
     # Use the positional path argument
     scan_path = path
+
+    logger.debug(f"Starting lint scan of: {scan_path}")
+    logger.debug(
+        f"Options: auto_fix={auto_fix}, max_line_length={max_line_length}"
+    )
 
     # Use auto_fix flag to determine if we should fix issues
     should_fix = auto_fix
@@ -176,6 +192,8 @@ def lint(
         scanner = MarkdownFileScanner(scan_path)
         markdown_files = scanner.find_markdown_files()
 
+        logger.debug(f"Found {len(markdown_files)} markdown files to scan")
+
         if not markdown_files:
             if not quiet:
                 console.print(
@@ -186,8 +204,12 @@ def lint(
         # Process files
         results = []
         for md_file in markdown_files:
+            logger.debug(f"Processing file: {md_file}")
             result = _process_file(md_file, should_fix, max_line_length)
             results.append(result)
+            logger.debug(
+                f"Result: {len(result.violations)} violations, {len(result.fixes_applied)} fixes applied"
+            )
 
         # Create scan result
         scan_result = ScanResult()
@@ -262,6 +284,11 @@ def github(
         False,
         "--dry-run",
         help="Preview changes without applying them",
+    ),
+    no_dco: bool = typer.Option(
+        False,
+        "--no-dco",
+        help="Disable adding DCO Signed-off-by trailer to commits (default: DCO is added)",
     ),
     include_drafts: bool = typer.Option(
         False,
@@ -394,6 +421,7 @@ def github(
                 git_config_mode=git_config_mode,
                 update_method=update_method,
                 pr_changes_only=pr_changes_only,
+                add_dco=not no_dco,
             )
         )
     else:
@@ -411,6 +439,7 @@ def github(
                 git_config_mode=git_config_mode,
                 update_method=update_method,
                 pr_changes_only=pr_changes_only,
+                add_dco=not no_dco,
             )
         )
 
@@ -425,6 +454,7 @@ async def _fix_single_pr(
     git_config_mode: str = GitConfigMode.USER_INHERIT,
     update_method: str = "api",
     pr_changes_only: bool = False,
+    add_dco: bool = True,
 ) -> None:
     """Fix markdown tables in a single PR."""
     if not quiet:
@@ -440,6 +470,7 @@ async def _fix_single_pr(
                 dry_run=dry_run,
                 update_method=update_method,
                 pr_changes_only=pr_changes_only,
+                add_dco=add_dco,
             )
 
             if result.success:
@@ -470,6 +501,7 @@ async def _scan_organization(
     git_config_mode: str = GitConfigMode.USER_INHERIT,
     update_method: str = "api",
     pr_changes_only: bool = False,
+    add_dco: bool = True,
 ) -> None:
     """Scan organization for PRs with markdown table issues."""
     # Remove github.com prefix if present
@@ -618,6 +650,7 @@ async def _scan_organization(
                         dry_run=dry_run,
                         update_method=update_method,
                         pr_changes_only=pr_changes_only,
+                        add_dco=add_dco,
                     )
 
                     if result.success:
@@ -669,29 +702,45 @@ def _process_file(
     Returns:
         File processing result
     """
+    logger = logging.getLogger("markdown_table_fixer")
     result = FileResult(file_path=file_path)
 
     try:
         # Parse tables from file
+        logger.debug(f"Parsing tables from {file_path}")
         parser = TableParser(file_path)
         tables = parser.parse_file()
 
         result.tables_found = len(tables)
+        logger.debug(f"Found {len(tables)} tables in {file_path}")
 
         # Validate each table
-        for table in tables:
+        for idx, table in enumerate(tables):
+            logger.debug(
+                f"Validating table {idx + 1} at line {table.start_line}"
+            )
             validator = TableValidator(table)
             violations = validator.validate()
             result.violations.extend(violations)
+            logger.debug(f"Table {idx + 1}: {len(violations)} violations found")
+
+            if violations:
+                for v in violations:
+                    logger.debug(
+                        f"  - {v.violation_type.value} at line {v.line_number}, col {v.column}: {v.message}"
+                    )
 
         # Fix if requested
         # Always run fixer if fix=True to add MD013 comments even when no violations
         if fix:
+            logger.debug(f"Applying fixes to {file_path}")
             fixer = FileFixer(file_path, max_line_length=max_line_length)
             fixes = fixer.fix_file(tables)
             result.fixes_applied.extend(fixes)
+            logger.debug(f"Applied {len(fixes)} fixes to {file_path}")
 
     except (FileAccessError, TableParseError) as e:
+        logger.error(f"Error processing {file_path}: {e}")
         result.error = str(e)
 
     return result

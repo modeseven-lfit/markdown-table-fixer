@@ -149,6 +149,7 @@ class PRFixer:
         dry_run: bool = False,
         update_method: str = "api",
         pr_changes_only: bool = False,
+        add_dco: bool = True,
     ) -> GitHubFixResult:
         """Fix markdown tables in a PR by URL.
 
@@ -159,6 +160,7 @@ class PRFixer:
             dry_run: If True, don't actually push changes
             update_method: Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits)
             pr_changes_only: If True, only process files changed in the PR (default: False, process all markdown files)
+            add_dco: If True, add DCO Signed-off-by trailer to commits (default: True)
 
         Returns:
             GitHubFixResult with operation details
@@ -265,6 +267,7 @@ class PRFixer:
                     pr_data,
                     dry_run=dry_run,
                     pr_changes_only=pr_changes_only,
+                    add_dco=add_dco,
                 )
             else:
                 # Clone and fix using Git operations
@@ -705,8 +708,9 @@ class PRFixer:
         *,
         dry_run: bool = False,
         pr_changes_only: bool = False,
+        add_dco: bool = True,
     ) -> GitHubFixResult:
-        """Fix PR using GitHub API (creates new commits, shows as verified by GitHub).
+        """Fix PR using GitHub API (creates new commits).
 
         Args:
             pr_info: PR information
@@ -715,6 +719,7 @@ class PRFixer:
             pr_data: Full PR data from API
             dry_run: If True, don't actually push changes
             pr_changes_only: If True, only process files changed in the PR
+            add_dco: If True, add DCO Signed-off-by trailer (default: True)
 
         Returns:
             GitHubFixResult with operation details
@@ -726,6 +731,7 @@ class PRFixer:
             dry_run=dry_run,
             create_comment=True,
             pr_changes_only=pr_changes_only,
+            add_dco=add_dco,
         )
 
         if result.get("success"):
@@ -757,6 +763,7 @@ class PRFixer:
         dry_run: bool = False,
         create_comment: bool = True,
         pr_changes_only: bool = False,
+        add_dco: bool = True,
     ) -> dict[str, Any]:
         """Fix markdown tables in a pull request.
 
@@ -767,6 +774,7 @@ class PRFixer:
             dry_run: If True, don't actually push changes
             create_comment: If True, create a comment summarizing fixes
             pr_changes_only: If True, only process files changed in the PR
+            add_dco: If True, add DCO Signed-off-by trailer (default: True)
 
         Returns:
             Dictionary with fix results
@@ -854,7 +862,9 @@ class PRFixer:
         files_fixed = 0
         tables_fixed = 0
         fixed_files_list = []
+        batch_updates = []  # Collect all file updates for single commit
 
+        # First pass: analyze all files and collect changes
         for file_data in markdown_files:
             filename = file_data.get("filename", "")
             file_sha = file_data.get("sha")
@@ -919,48 +929,15 @@ class PRFixer:
                             fix.original_content, fix.fixed_content
                         )
 
-                # Only update if content changed
+                # Only collect if content changed
                 if fixed_content != content:
                     self.logger.debug(f"Content changed for {filename}")
-                    if not dry_run:
-                        self.logger.debug(
-                            f"Updating file {filename} in branch {branch}"
-                        )
-                        # Re-fetch file info to get current SHA
-                        file_info = await self.client._request(
-                            "GET",
-                            f"/repos/{owner}/{repo}/contents/{filename}",
-                            params={"ref": branch},
-                        )
-                        current_sha_raw = (
-                            file_info.get("sha")
-                            if isinstance(file_info, dict)
-                            else file_sha
-                        )
-                        current_sha = (
-                            current_sha_raw
-                            if isinstance(current_sha_raw, str)
-                            else file_sha
-                        )
-
-                        # Update the file
-                        commit_message = (
-                            f"Fix markdown table formatting in {filename}\n\n"
-                            f"Automatically fixed {fixes_applied} table(s) "
-                            f"in PR #{pr_number}"
-                        )
-
-                        await self.client.update_file(
-                            owner,
-                            repo,
-                            filename,
-                            fixed_content,
-                            commit_message,
-                            branch,
-                            current_sha,
-                        )
-                        self.logger.info(f"Successfully updated {filename}")
-
+                    batch_updates.append(
+                        {
+                            "path": filename,
+                            "content": fixed_content,
+                        }
+                    )
                     files_fixed += 1
                     tables_fixed += fixes_applied
                     fixed_files_list.append(
@@ -972,6 +949,52 @@ class PRFixer:
             except Exception:
                 # Continue with other files if one fails
                 continue
+
+        # Second pass: apply all updates in a single batch commit
+        if batch_updates and not dry_run:
+            self.logger.info(
+                f"Applying batch update: {len(batch_updates)} file(s) in single commit"
+            )
+            try:
+                commit_message = (
+                    f"Fix markdown table formatting\n\n"
+                    f"Automatically fixed {tables_fixed} table(s) across "
+                    f"{files_fixed} file(s) in PR #{pr_number}\n\n"
+                    f"Files updated:\n"
+                )
+                for file_info in fixed_files_list:
+                    filename = file_info["filename"]
+                    table_count = file_info["tables"]
+                    commit_message += f"- {filename}: {table_count} table(s)\n"
+
+                # Set up author identity for commit
+                author_name = "markdown-table-fixer"
+                author_email = "markdown-table-fixer@linuxfoundation.org"
+
+                # Add DCO sign-off if requested
+                if add_dco:
+                    commit_message += (
+                        f"\nSigned-off-by: {author_name} <{author_email}>\n"
+                    )
+
+                await self.client.batch_update_files(
+                    owner,
+                    repo,
+                    branch,
+                    batch_updates,
+                    commit_message,
+                    author_name=author_name,
+                    author_email=author_email,
+                )
+                self.logger.info("Successfully applied batch update")
+            except Exception as e:
+                self.logger.error(f"Failed to apply batch update: {e}")
+                return {
+                    "success": False,
+                    "error": f"Failed to apply batch update: {e}",
+                    "files_fixed": 0,
+                    "tables_fixed": 0,
+                }
 
         self.logger.debug(
             f"PR fix complete: {files_fixed} files, {tables_fixed} tables"
