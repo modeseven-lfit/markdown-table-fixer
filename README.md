@@ -110,6 +110,23 @@ markdown-table-fixer github https://github.com/owner/repo/pull/123 \
 - Requires Git operations (clone, amend, push)
 - Use when you need to amend commits or use sync strategies
 
+#### Scope Control
+
+By default, both methods scan and fix **all markdown files** in the
+repository. To limit processing to files changed in the PR, use the
+`--pr-changes-only` flag:
+
+```bash
+markdown-table-fixer github https://github.com/owner/repo/pull/123 \
+  --pr-changes-only
+```
+
+Benefits of limiting scope to PR changes:
+
+- Faster processing (fewer files to check)
+- Useful when you want to fix tables in modified files without touching others
+- Avoids touching unrelated markdown files
+
 #### Fix PRs Across an Organization
 
 Scan and fix tables in PRs across an entire GitHub organization:

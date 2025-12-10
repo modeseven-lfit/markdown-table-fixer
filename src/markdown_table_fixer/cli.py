@@ -243,6 +243,11 @@ def github(
         help="Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits, default)",
         case_sensitive=False,
     ),
+    pr_changes_only: bool = typer.Option(
+        False,
+        "--pr-changes-only",
+        help="Only fix/process files updated in the pull request",
+    ),
     no_user_signing: bool = typer.Option(
         False,
         "--no-user-signing",
@@ -388,6 +393,7 @@ def github(
                 quiet=quiet,
                 git_config_mode=git_config_mode,
                 update_method=update_method,
+                pr_changes_only=pr_changes_only,
             )
         )
     else:
@@ -404,6 +410,7 @@ def github(
                 quiet=quiet,
                 git_config_mode=git_config_mode,
                 update_method=update_method,
+                pr_changes_only=pr_changes_only,
             )
         )
 
@@ -417,6 +424,7 @@ async def _fix_single_pr(
     quiet: bool = False,
     git_config_mode: str = GitConfigMode.USER_INHERIT,
     update_method: str = "api",
+    pr_changes_only: bool = False,
 ) -> None:
     """Fix markdown tables in a single PR."""
     if not quiet:
@@ -431,6 +439,7 @@ async def _fix_single_pr(
                 conflict_strategy=conflict_strategy,
                 dry_run=dry_run,
                 update_method=update_method,
+                pr_changes_only=pr_changes_only,
             )
 
             if result.success:
@@ -460,6 +469,7 @@ async def _scan_organization(
     quiet: bool = False,
     git_config_mode: str = GitConfigMode.USER_INHERIT,
     update_method: str = "api",
+    pr_changes_only: bool = False,
 ) -> None:
     """Scan organization for PRs with markdown table issues."""
     # Remove github.com prefix if present
@@ -607,6 +617,7 @@ async def _scan_organization(
                         conflict_strategy=conflict_strategy,
                         dry_run=dry_run,
                         update_method=update_method,
+                        pr_changes_only=pr_changes_only,
                     )
 
                     if result.success:

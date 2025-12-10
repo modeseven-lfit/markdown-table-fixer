@@ -148,6 +148,7 @@ class PRFixer:
         conflict_strategy: str = "fail",
         dry_run: bool = False,
         update_method: str = "api",
+        pr_changes_only: bool = False,
     ) -> GitHubFixResult:
         """Fix markdown tables in a PR by URL.
 
@@ -157,6 +158,7 @@ class PRFixer:
             conflict_strategy: How to resolve conflicts: 'fail', 'ours', or 'theirs' (git method only)
             dry_run: If True, don't actually push changes
             update_method: Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits)
+            pr_changes_only: If True, only process files changed in the PR (default: False, process all markdown files)
 
         Returns:
             GitHubFixResult with operation details
@@ -262,6 +264,7 @@ class PRFixer:
                     repo,
                     pr_data,
                     dry_run=dry_run,
+                    pr_changes_only=pr_changes_only,
                 )
             else:
                 # Clone and fix using Git operations
@@ -273,6 +276,7 @@ class PRFixer:
                     sync_strategy=sync_strategy,
                     conflict_strategy=conflict_strategy,
                     dry_run=dry_run,
+                    pr_changes_only=pr_changes_only,
                 )
 
         except Exception as e:
@@ -307,6 +311,7 @@ class PRFixer:
         conflict_strategy: str = "fail",
         dry_run: bool = False,
         git_config_mode: str | None = None,
+        pr_changes_only: bool = False,
     ) -> GitHubFixResult:
         """Fix PR using Git operations (clone, fix, amend, push).
 
@@ -319,6 +324,7 @@ class PRFixer:
             conflict_strategy: How to resolve conflicts: 'fail', 'ours', or 'theirs'
             dry_run: If True, don't push changes
             git_config_mode: Override git config mode for this operation
+            pr_changes_only: If True, only process files changed in the PR
 
         Returns:
             GitHubFixResult with operation details
@@ -370,8 +376,22 @@ class PRFixer:
                         raise RuntimeError(error_msg) from e
 
                 # Find and fix markdown files
-                scanner = MarkdownFileScanner(repo_dir)
-                markdown_files = scanner.find_markdown_files()
+                if pr_changes_only:
+                    # Only process files changed in the PR
+                    changed_files = await self.client.get_pr_files(
+                        owner, repo, pr_info.number
+                    )
+                    markdown_files = [
+                        repo_dir / f.get("filename", "")
+                        for f in changed_files
+                        if f.get("filename", "").endswith(".md")
+                        and f.get("status") != "removed"
+                        and (repo_dir / f.get("filename", "")).exists()
+                    ]
+                else:
+                    # Scan all markdown files in the repository
+                    scanner = MarkdownFileScanner(repo_dir)
+                    markdown_files = scanner.find_markdown_files()
 
                 self.logger.debug(f"Found {len(markdown_files)} markdown files")
 
@@ -684,6 +704,7 @@ class PRFixer:
         pr_data: dict[str, Any],
         *,
         dry_run: bool = False,
+        pr_changes_only: bool = False,
     ) -> GitHubFixResult:
         """Fix PR using GitHub API (creates new commits, shows as verified by GitHub).
 
@@ -693,6 +714,7 @@ class PRFixer:
             repo: Repository name
             pr_data: Full PR data from API
             dry_run: If True, don't actually push changes
+            pr_changes_only: If True, only process files changed in the PR
 
         Returns:
             GitHubFixResult with operation details
@@ -703,6 +725,7 @@ class PRFixer:
             pr_data,
             dry_run=dry_run,
             create_comment=True,
+            pr_changes_only=pr_changes_only,
         )
 
         if result.get("success"):
@@ -733,6 +756,7 @@ class PRFixer:
         *,
         dry_run: bool = False,
         create_comment: bool = True,
+        pr_changes_only: bool = False,
     ) -> dict[str, Any]:
         """Fix markdown tables in a pull request.
 
@@ -742,6 +766,7 @@ class PRFixer:
             pr: Pull request data
             dry_run: If True, don't actually push changes
             create_comment: If True, create a comment summarizing fixes
+            pr_changes_only: If True, only process files changed in the PR
 
         Returns:
             Dictionary with fix results
@@ -761,18 +786,59 @@ class PRFixer:
                 "tables_fixed": 0,
             }
 
-        # Get markdown files from the PR
-        self.logger.debug(f"Fetching files for PR #{pr_number}")
-        files = await self.client.get_pr_files(owner, repo, pr_number)
-        self.logger.debug(f"Found {len(files)} files in PR")
-        markdown_files = [
-            f
-            for f in files
-            if f.get("filename", "").endswith(".md")
-            and f.get("status") != "removed"
-        ]
+        # Get markdown files - either from PR changes only or all in repo
+        if pr_changes_only:
+            # Only process files changed in the PR
+            self.logger.debug(f"Fetching changed files for PR #{pr_number}")
+            files = await self.client.get_pr_files(owner, repo, pr_number)
+            self.logger.debug(f"Found {len(files)} changed files in PR")
+            markdown_files = [
+                f
+                for f in files
+                if f.get("filename", "").endswith(".md")
+                and f.get("status") != "removed"
+            ]
+        else:
+            # Process all markdown files in the repository
+            self.logger.debug("Fetching all markdown files from repository")
+            try:
+                # Get all files from the repository at the PR branch
+                tree_response = await self.client._request(
+                    "GET",
+                    f"/repos/{owner}/{repo}/git/trees/{head_sha}",
+                    params={"recursive": "1"},
+                )
+                tree = (
+                    tree_response.get("tree", [])
+                    if isinstance(tree_response, dict)
+                    else []
+                )
 
-        self.logger.debug(f"Found {len(markdown_files)} markdown files")
+                # Filter for markdown files
+                markdown_files = [
+                    {
+                        "filename": item.get("path", ""),
+                        "sha": item.get("sha", ""),
+                    }
+                    for item in tree
+                    if item.get("type") == "blob"
+                    and item.get("path", "").endswith(".md")
+                ]
+                self.logger.debug(
+                    f"Found {len(markdown_files)} markdown files in repository"
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to fetch repository tree: {e}")
+                return {
+                    "success": False,
+                    "error": f"Failed to fetch repository files: {e}",
+                    "files_fixed": 0,
+                    "tables_fixed": 0,
+                }
+
+        self.logger.debug(
+            f"Found {len(markdown_files)} markdown files to process"
+        )
         for f in markdown_files:
             self.logger.debug(f"  - {f.get('filename')}")
 
