@@ -260,6 +260,139 @@ class GitHubClient:
         result = await self._request("GET", "/rate_limit")
         return result if isinstance(result, dict) else {}
 
+    async def batch_update_files(
+        self,
+        owner: str,
+        repo: str,
+        branch: str,
+        files: list[dict[str, str]],
+        message: str,
+        author_name: str | None = None,
+        author_email: str | None = None,
+    ) -> dict[str, Any]:
+        """Update multiple files in a single commit using Git Data API.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            branch: Branch name
+            files: List of dicts with 'path' and 'content' keys
+            message: Commit message
+            author_name: Commit author name (optional)
+            author_email: Commit author email (optional)
+
+        Returns:
+            Commit data
+        """
+        # Get the current commit SHA for the branch
+        ref_result = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/git/ref/heads/{branch}",
+        )
+        if not isinstance(ref_result, dict):
+            msg = "Failed to get branch reference"
+            raise FileAccessError(msg)
+
+        base_commit_sha = ref_result["object"]["sha"]
+
+        # Get the base commit to retrieve its tree SHA
+        commit_result = await self._request(
+            "GET",
+            f"/repos/{owner}/{repo}/git/commits/{base_commit_sha}",
+        )
+        if not isinstance(commit_result, dict):
+            msg = "Failed to get base commit"
+            raise FileAccessError(msg)
+
+        base_tree_sha = commit_result["tree"]["sha"]
+
+        # Create blobs for each file
+        tree_items = []
+        for file_info in files:
+            path = file_info["path"]
+            content = file_info["content"]
+
+            # Create blob
+            blob_result = await self._request(
+                "POST",
+                f"/repos/{owner}/{repo}/git/blobs",
+                json={
+                    "content": content,
+                    "encoding": "utf-8",
+                },
+            )
+            if not isinstance(blob_result, dict):
+                msg = f"Failed to create blob for {path}"
+                raise FileAccessError(msg)
+
+            blob_sha = blob_result["sha"]
+
+            tree_items.append(
+                {
+                    "path": path,
+                    "mode": "100644",  # Regular file
+                    "type": "blob",
+                    "sha": blob_sha,
+                }
+            )
+
+        # Create new tree
+        tree_result = await self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/trees",
+            json={
+                "base_tree": base_tree_sha,
+                "tree": tree_items,
+            },
+        )
+        if not isinstance(tree_result, dict):
+            msg = "Failed to create tree"
+            raise FileAccessError(msg)
+
+        new_tree_sha = tree_result["sha"]
+
+        # Create new commit
+        commit_payload: dict[str, Any] = {
+            "message": message,
+            "tree": new_tree_sha,
+            "parents": [base_commit_sha],
+        }
+
+        # Add author information if provided
+        if author_name and author_email:
+            commit_payload["author"] = {
+                "name": author_name,
+                "email": author_email,
+            }
+            # Use same identity for committer to ensure DCO compliance
+            commit_payload["committer"] = {
+                "name": author_name,
+                "email": author_email,
+            }
+
+        commit_create_result = await self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/commits",
+            json=commit_payload,
+        )
+        if not isinstance(commit_create_result, dict):
+            msg = "Failed to create commit"
+            raise FileAccessError(msg)
+
+        new_commit_sha = commit_create_result["sha"]
+
+        # Update branch reference
+        update_result = await self._request(
+            "PATCH",
+            f"/repos/{owner}/{repo}/git/refs/heads/{branch}",
+            json={
+                "sha": new_commit_sha,
+                "force": False,  # Don't force update
+            },
+        )
+
+        return update_result if isinstance(update_result, dict) else {}
+
     async def create_comment(
         self, owner: str, repo: str, pr_number: int, body: str
     ) -> dict[str, Any]:
