@@ -146,6 +146,22 @@ class TableFix:
 
 
 @dataclass
+class FileFixResult:
+    """Results of fixing a single file.
+
+    Tracks both structural table fixes and MD013 comment additions.
+    """
+
+    file_path: Path
+    tables_fixed: int = 0  # Tables with structural fixes
+    tables_with_md013: int = (
+        0  # Tables that got MD013 comments (for line length)
+    )
+    tables_with_md060: int = 0  # Tables that got MD060 comments (for emojis)
+    total_tables: int = 0  # Total tables processed in this file
+
+
+@dataclass
 class FileResult:
     """Results for a single markdown file."""
 

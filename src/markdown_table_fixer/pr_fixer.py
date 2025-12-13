@@ -126,7 +126,7 @@ class PRFixer:
                     ):
                         line_length = md013_config["line_length"]
                         if isinstance(line_length, int):
-                            self.logger.info(
+                            self.logger.debug(
                                 f"Found markdownlint config in {config_file}: MD013 line_length={line_length}"
                             )
                             return line_length
@@ -240,11 +240,11 @@ class PRFixer:
             return False, False, content
 
         if needs_md013 and not has_validation_issues:
-            self.logger.info(
+            self.logger.debug(
                 f"Tables in {filename} need MD013 comments (line length > {max_line_length})"
             )
 
-        self.logger.info(f"Found issues in {filename}, applying fixes")
+        self.logger.debug(f"Found issues in {filename}, applying fixes")
 
         # Use FileFixer which handles both table formatting and MD013 comments
         # Pass max_line_length explicitly since temp file can't find .markdownlintrc
@@ -355,7 +355,7 @@ class PRFixer:
             sync_strategy: How to sync with base branch: 'none', 'rebase', or 'merge' (git method only)
             conflict_strategy: How to resolve conflicts: 'fail', 'ours', or 'theirs' (git method only)
             dry_run: If True, don't actually push changes
-            update_method: Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits)
+            update_method: Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API)
             pr_changes_only: If True, only process files changed in the PR (default: False, process all markdown files)
             add_dco: If True, add DCO Signed-off-by trailer to commits (default: True)
 
@@ -597,6 +597,8 @@ class PRFixer:
 
                 files_modified = []
                 tables_fixed = 0
+                tables_with_md013 = 0
+                tables_with_md060 = 0
 
                 for md_file in markdown_files:
                     self.logger.debug(f"Processing {md_file}")
@@ -640,20 +642,26 @@ class PRFixer:
 
                     # Fix the file (auto-detect line length from markdownlint config)
                     fixer = FileFixer(md_file)
-                    fixes = fixer.fix_file(tables, dry_run=False)
+                    fix_result = fixer.fix_file(tables, dry_run=False)
 
-                    # If we got here, either the table had validation issues or needed MD013 comments
-                    # In either case, fix_file was called and may have modified the file
-                    # (even if fixes list is empty, MD013 comments may have been added)
+                    # Track results
                     files_modified.append(md_file)
-                    if fixes:
-                        tables_fixed += len(fixes)
+                    tables_fixed += fix_result.tables_fixed
+                    tables_with_md013 += fix_result.tables_with_md013
+                    tables_with_md060 += fix_result.tables_with_md060
+
+                    # Log what was done
+                    if fix_result.tables_fixed > 0:
                         self.logger.debug(
-                            f"Fixed {len(fixes)} table(s) in {md_file.name}"
+                            f"Fixed {fix_result.tables_fixed} table(s) in {md_file.name}"
                         )
-                    else:
+                    if fix_result.tables_with_md013 > 0:
                         self.logger.debug(
-                            f"Added MD013 comments to {md_file.name}"
+                            f"Added MD013 comments for {fix_result.tables_with_md013} table(s) in {md_file.name}"
+                        )
+                    if fix_result.tables_with_md060 > 0:
+                        self.logger.debug(
+                            f"Added MD060 comments for {fix_result.tables_with_md060} table(s) in {md_file.name}"
                         )
 
                 # Handle no files modified or dry-run mode
@@ -665,7 +673,25 @@ class PRFixer:
                         file_names = [
                             str(f.relative_to(repo_dir)) for f in files_modified
                         ]
-                        message = f"[DRY RUN] Would fix {tables_fixed} table(s) in {len(files_modified)} file(s): {', '.join(file_names)}"
+                        # Build multi-line message breaking down each type of fix
+                        message_lines = [
+                            f"Would fix {len(files_modified)} file(s): {', '.join(file_names)}"
+                        ]
+
+                        if tables_fixed > 0:
+                            message_lines.append(
+                                f"   {tables_fixed} table(s) with alignment/spacing issues"
+                            )
+                        if tables_with_md013 > 0:
+                            message_lines.append(
+                                f"   {tables_with_md013} table(s) with MD013 comments"
+                            )
+                        if tables_with_md060 > 0:
+                            message_lines.append(
+                                f"   {tables_with_md060} table(s) with MD060 comments"
+                            )
+
+                        message = "\n".join(message_lines)
                         result_files = files_modified
                     return GitHubFixResult(
                         pr_info=pr_info,
@@ -703,11 +729,11 @@ class PRFixer:
 
                 if result.returncode == 0:
                     # No changes - return early with success
-                    self.logger.info("No formatting changes needed")
+                    self.logger.debug("No formatting changes needed")
                     return GitHubFixResult(
                         pr_info=pr_info,
                         success=True,
-                        message="Files were already properly formatted",
+                        message="⏩ Files were already properly formatted",
                         files_modified=[],
                     )
 
@@ -774,10 +800,31 @@ class PRFixer:
                         owner, repo, pr_info.number, comment_body
                     )
 
+                # Build multi-line message with file names and breakdown
+                file_names = [
+                    str(f.relative_to(repo_dir)) for f in files_modified
+                ]
+                message_lines = [
+                    f"Fixed {len(files_modified)} file(s): {', '.join(file_names)}"
+                ]
+
+                if tables_fixed > 0:
+                    message_lines.append(
+                        f"   {tables_fixed} table(s) with alignment/spacing issues"
+                    )
+                if tables_with_md013 > 0:
+                    message_lines.append(
+                        f"   {tables_with_md013} table(s) with MD013 comments"
+                    )
+                if tables_with_md060 > 0:
+                    message_lines.append(
+                        f"   {tables_with_md060} table(s) with MD060 comments"
+                    )
+
                 return GitHubFixResult(
                     pr_info=pr_info,
                     success=True,
-                    message=f"Fixed {tables_fixed} table(s) in {len(files_modified)} file(s)",
+                    message="\n".join(message_lines),
                     files_modified=files_modified,
                 )
 
@@ -829,7 +876,7 @@ class PRFixer:
             subprocess.CalledProcessError: If sync operation fails
         """
         # Fetch the base branch
-        self.logger.info(f"Fetching origin/{base_ref}")
+        self.logger.debug(f"Fetching origin/{base_ref}")
         subprocess.run(
             ["git", "fetch", "origin", base_ref],
             cwd=repo_dir,
@@ -839,7 +886,7 @@ class PRFixer:
         )
 
         if sync_strategy == "rebase":
-            self.logger.info(f"Rebasing {head_ref} onto origin/{base_ref}")
+            self.logger.debug(f"Rebasing {head_ref} onto origin/{base_ref}")
             try:
                 rebase_cmd = ["git", "rebase", f"origin/{base_ref}"]
                 if conflict_strategy == "ours":
@@ -854,7 +901,7 @@ class PRFixer:
                     capture_output=True,
                     text=True,
                 )
-                self.logger.info("Rebase successful")
+                self.logger.debug("Rebase successful")
             except subprocess.CalledProcessError as e:
                 if conflict_strategy == "fail":
                     # Abort rebase on failure
@@ -876,7 +923,7 @@ class PRFixer:
                     )
 
         elif sync_strategy == "merge":
-            self.logger.info(f"Merging origin/{base_ref} into {head_ref}")
+            self.logger.debug(f"Merging origin/{base_ref} into {head_ref}")
             try:
                 merge_cmd = [
                     "git",
@@ -900,7 +947,7 @@ class PRFixer:
                     capture_output=True,
                     text=True,
                 )
-                self.logger.info("Merge successful")
+                self.logger.debug("Merge successful")
             except subprocess.CalledProcessError as e:
                 if conflict_strategy == "fail":
                     # Abort merge on failure
@@ -932,7 +979,7 @@ class PRFixer:
         pr_changes_only: bool = False,
         add_dco: bool = True,
     ) -> GitHubFixResult:
-        """Fix PR using GitHub API (creates new commits).
+        """Fix PR using GitHub API (updates files).
 
         Args:
             pr_info: PR information
@@ -960,7 +1007,13 @@ class PRFixer:
             files_modified = [
                 Path(f["filename"]) for f in result.get("fixed_files", [])
             ]
-            message = f"Fixed {result.get('tables_fixed', 0)} table(s) in {result.get('files_fixed', 0)} file(s)"
+            # Build message with file names
+            # Note: API method doesn't track MD013/MD060 separately, so simpler message
+            file_names = [f["filename"] for f in result.get("fixed_files", [])]
+            if file_names:
+                message = f"Fixed {result.get('files_fixed', 0)} file(s): {', '.join(file_names)}\n   {result.get('tables_fixed', 0)} table(s) with alignment/spacing issues"
+            else:
+                message = f"Fixed {result.get('tables_fixed', 0)} table(s)"
 
             return GitHubFixResult(
                 pr_info=pr_info,
@@ -1073,7 +1126,7 @@ class PRFixer:
             self.logger.debug(f"  - {f.get('filename')}")
 
         if not markdown_files:
-            self.logger.info("No markdown files to fix")
+            self.logger.debug("No markdown files to fix")
             return {
                 "success": True,
                 "message": "No markdown files to fix",
@@ -1159,11 +1212,11 @@ class PRFixer:
                     continue
 
                 if needs_md013 and not has_issues:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Tables in {filename} need MD013 comments (line length > {max_line_length})"
                     )
 
-                self.logger.info(f"Found issues in {filename}, applying fixes")
+                self.logger.debug(f"Found issues in {filename}, applying fixes")
 
                 # Use FileFixer which handles both table formatting and MD013 comments
                 from .table_fixer import FileFixer
@@ -1204,7 +1257,7 @@ class PRFixer:
 
         # Second pass: apply all updates in a single batch commit
         if batch_updates and not dry_run:
-            self.logger.info(
+            self.logger.debug(
                 f"Applying batch update: {len(batch_updates)} file(s) in single commit"
             )
             try:
@@ -1238,7 +1291,7 @@ class PRFixer:
                     author_name=author_name,
                     author_email=author_email,
                 )
-                self.logger.info("Successfully applied batch update")
+                self.logger.debug("Successfully applied batch update")
             except Exception as e:
                 self.logger.error(f"Failed to apply batch update: {e}")
                 return {

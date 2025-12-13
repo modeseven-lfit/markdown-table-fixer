@@ -103,7 +103,7 @@ class BlockedPRScanner:
             console.print(
                 f"\n✅ Scan completed\n"
                 f"📊 Found {len(scan_result.unmergeable_prs)} blocked PRs "
-                f"out of {scan_result.total_prs} total PRs across {scan_result.scanned_repositories} repositories\n"
+                f"out of {scan_result.total_prs} total PRs across {scan_result.scanned_repositories} repositories"
             )
         else:
             self.logger.info(

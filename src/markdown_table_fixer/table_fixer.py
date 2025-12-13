@@ -14,7 +14,7 @@ import yaml
 if TYPE_CHECKING:
     from pathlib import Path
 
-from .models import MarkdownTable, TableFix, TableRow
+from .models import FileFixResult, MarkdownTable, TableFix, TableRow
 from .table_validator import TableValidator
 
 
@@ -476,7 +476,7 @@ class FileFixer:
 
     def fix_file(
         self, tables: list[MarkdownTable], dry_run: bool = False
-    ) -> list[TableFix]:
+    ) -> FileFixResult:
         """Fix all tables in the file.
 
         Args:
@@ -484,7 +484,7 @@ class FileFixer:
             dry_run: If True, don't write changes to file
 
         Returns:
-            List of fixes applied
+            FileFixResult with detailed breakdown of changes
         """
         fixes: list[TableFix] = []
 
@@ -494,12 +494,69 @@ class FileFixer:
             if fix:
                 fixes.append(fix)
 
+        # Calculate MD013 and MD060 counts (even in dry_run mode for reporting)
+        md013_count, md060_count = self._calculate_md_comment_needs(
+            fixes, tables
+        )
+
         if not dry_run:
             # Apply fixes and add MD013 comments for all tables
-            # (even if no fixes, we may still need MD013 comments)
             self._apply_fixes(fixes, tables)
 
-        return fixes
+        return FileFixResult(
+            file_path=self.file_path,
+            tables_fixed=len(fixes),
+            tables_with_md013=md013_count,
+            tables_with_md060=md060_count,
+            total_tables=len(tables),
+        )
+
+    def _calculate_md_comment_needs(
+        self, fixes: list[TableFix], all_tables: list[MarkdownTable]
+    ) -> tuple[int, int]:
+        """Calculate which tables need MD013/MD060 comments.
+
+        Args:
+            fixes: List of fixes to apply
+            all_tables: All tables in the file
+
+        Returns:
+            Tuple of (md013_count, md060_count) - number of tables that need each type of comment
+        """
+        tables_needing_md013 = 0
+        tables_needing_md060 = 0
+
+        for table in all_tables:
+            # Get the table content (either fixed or original)
+            table_lines = []
+            fix_for_table = None
+            for fix in fixes:
+                if (
+                    fix.start_line == table.start_line
+                    and fix.end_line == table.end_line
+                ):
+                    fix_for_table = fix
+                    table_lines = fix.fixed_content.split("\n")
+                    break
+
+            # If no fix, use original lines
+            if not fix_for_table:
+                table_lines = [row.raw_line for row in table.rows]
+
+            # Check if any line exceeds max_line_length
+            max_len = (
+                max(len(line.rstrip()) for line in table_lines)
+                if table_lines
+                else 0
+            )
+            if max_len > self.max_line_length:
+                tables_needing_md013 += 1
+
+            # Check if table has emojis (causes MD060 violations)
+            if self._md060_enabled and self._table_has_emojis(table):
+                tables_needing_md060 += 1
+
+        return tables_needing_md013, tables_needing_md060
 
     def _apply_fixes(
         self, fixes: list[TableFix], all_tables: list[MarkdownTable]

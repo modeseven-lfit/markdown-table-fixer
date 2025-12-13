@@ -241,7 +241,7 @@ def configure_git_identity(
                         f"Failed to set gpg.program to {gpg_program}"
                     )
 
-        logger.info(
+        logger.debug(
             f"Git signing enabled: format={gpg_format}, "
             f"key={'configured' if applied_config.get('user.signingkey') else 'default'}"
         )

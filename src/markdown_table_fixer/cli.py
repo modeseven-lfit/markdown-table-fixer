@@ -10,6 +10,7 @@ import json
 import logging
 from pathlib import Path
 
+from dependamerge import get_default_workers
 from rich.console import Console
 from rich.logging import RichHandler
 import typer
@@ -268,25 +269,25 @@ def github(
         case_sensitive=False,
     ),
     update_method: str = typer.Option(
-        "api",
+        "git",
         "--update-method",
-        help="Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API commits, default)",
+        help="Method to apply fixes: 'git' (clone, amend, push) or 'api' (GitHub API)",
         case_sensitive=False,
+    ),
+    disable_signing: bool = typer.Option(
+        False,
+        "--disable-signing",
+        help="Disables commit signing (only applies to 'git' method)",
+    ),
+    bot_identity: bool = typer.Option(
+        False,
+        "--bot-identity",
+        help="Use bot identity instead of user (only applies to 'git' method, disables commit signing)",
     ),
     pr_changes_only: bool = typer.Option(
         False,
         "--pr-changes-only",
         help="Only fix/process files updated in the pull request",
-    ),
-    no_user_signing: bool = typer.Option(
-        False,
-        "--no-user-signing",
-        help="Use user identity but disable commit signing (only applies to 'git' method)",
-    ),
-    bot_identity: bool = typer.Option(
-        False,
-        "--bot-identity",
-        help="Use bot identity without signing (only applies to 'git' method)",
     ),
     dry_run: bool = typer.Option(
         False,
@@ -313,13 +314,13 @@ def github(
         "--debug-org",
         help="Debug mode: only process first PR found (useful for testing org scans)",
     ),
-    _workers: int = typer.Option(
-        4,
+    _workers: int | None = typer.Option(
+        None,
         "--workers",
         "-j",
         min=1,
         max=32,
-        help="Number of parallel workers (default: 4)",
+        help="Number of parallel workers (auto-detects CPU cores if not specified)",
     ),
     verbose: bool = typer.Option(
         False,
@@ -346,13 +347,13 @@ def github(
     - A specific PR by URL
 
     Update Methods:
-    - 'api' (default): Use GitHub API to create new commits (shows as verified by GitHub)
-    - 'git': Clone repo, amend commit, force-push (respects signing)
+    - 'git' (default): Clone repo, amend commit, force-push (respects signing)
+    - 'api': Use GitHub API to update files (shows as verified by GitHub)
 
     Git Identity & Signing (only applies to 'git' update method):
     - By default, uses your git user.name, user.email, and commit signing settings
-    - --no-user-signing: Use your identity but disable commit signing
-    - --bot-identity: Use bot identity without signing
+    - --disable-signing: Use your identity but disable commit signing
+    - --bot-identity: Use bot identity instead of user (disables commit signing)
 
     Sync strategies (only applies to 'git' update method):
     - 'none': Fix tables on PR branch as-is (may have conflicts)
@@ -382,15 +383,15 @@ def github(
         raise typer.Exit(1)
 
     # Determine git config mode from CLI flags (only relevant for git method)
-    if bot_identity and no_user_signing:
+    if bot_identity and disable_signing:
         console.print(
-            "[red]Error:[/red] Cannot use both --bot-identity and --no-user-signing"
+            "[red]Error:[/red] Cannot use both --bot-identity and --disable-signing"
         )
         raise typer.Exit(1)
 
     if bot_identity:
         git_config_mode = GitConfigMode.BOT_IDENTITY
-    elif no_user_signing:
+    elif disable_signing:
         git_config_mode = GitConfigMode.USER_NO_SIGN
     else:
         git_config_mode = GitConfigMode.USER_INHERIT
@@ -454,6 +455,9 @@ def github(
                 update_method=update_method,
                 pr_changes_only=pr_changes_only,
                 add_dco=not no_dco,
+                workers=_workers
+                if _workers is not None
+                else get_default_workers(),
             )
         )
 
@@ -471,8 +475,27 @@ async def _fix_single_pr(
     add_dco: bool = True,
 ) -> None:
     """Fix markdown tables in a single PR."""
+    logger = logging.getLogger("markdown_table_fixer.cli")
+
     if not quiet:
         console.print(f"🔍 Processing PR: {pr_url}")
+
+        # Show update method info
+        method_desc = (
+            "Git clone/amend/push"
+            if update_method.lower() == "git"
+            else "GitHub API"
+        )
+        console.print(f"Update method: {method_desc}")
+
+        # Show git identity info if using git method
+        if update_method.lower() == "git":
+            if git_config_mode == GitConfigMode.BOT_IDENTITY:
+                console.print("Git identity: Bot (markdown-table-fixer)")
+            elif git_config_mode == GitConfigMode.USER_NO_SIGN:
+                console.print("Git identity: User (signing disabled)")
+            else:
+                console.print("Git identity: User (inheriting signing config)")
 
     try:
         async with GitHubClient(token) as client:  # type: ignore[attr-defined]
@@ -486,13 +509,24 @@ async def _fix_single_pr(
                 pr_changes_only=pr_changes_only,
                 add_dco=add_dco,
             )
-
             if result.success:
                 if not quiet:
-                    console.print(f"[green]✅ {result.message}[/green]")
+                    # Use different emoji for dry-run vs actual fixes
+                    emoji = "☑️ " if dry_run else "✅"
+                    # Handle multi-line messages - only first line gets emoji
+                    message_lines = result.message.split("\n")
+                    if message_lines:
+                        console.print(
+                            f"[green]{emoji} {message_lines[0]}[/green]"
+                        )
+                        # Print remaining lines without emoji, with indentation
+                        for line in message_lines[1:]:
+                            console.print(f"[green]{line}[/green]")
+                    # Log temp file paths at debug level only (not shown to console)
                     if result.files_modified:
+                        logger.debug("Modified files (temp paths):")
                         for file in result.files_modified:
-                            console.print(f"     - {file}")
+                            logger.debug(f"  - {file}")
             elif not quiet:
                 console.print(f"[yellow]⚠️  {result.message}[/yellow]")
                 if result.error:
@@ -517,6 +551,7 @@ async def _scan_organization(
     update_method: str = "api",
     pr_changes_only: bool = False,
     add_dco: bool = True,
+    workers: int = 8,
 ) -> None:
     """Scan organization for PRs with markdown table issues."""
     # Remove github.com prefix if present
@@ -540,7 +575,7 @@ async def _scan_organization(
                 method_desc = (
                     "Git clone/amend/push"
                     if update_method.lower() == "git"
-                    else "GitHub API commits"
+                    else "GitHub API"
                 )
                 console.print(f"Update method: {method_desc}")
                 if update_method.lower() == "git":
@@ -561,9 +596,7 @@ async def _scan_organization(
                         "⚠️  Processing ALL PRs (not just blocked ones)"
                     )
                 else:
-                    console.print(
-                        "🚫 Only processing blocked/unmergeable PRs (default)"
-                    )
+                    console.print("🚫 Only processing blocked/unmergeable PRs")
                 console.print()
 
             # Collect PRs from async generator
@@ -576,7 +609,7 @@ async def _scan_organization(
                 blocked_scanner = BlockedPRScanner(
                     token=token,
                     progress_tracker=progress_tracker,
-                    max_repo_tasks=10,
+                    max_repo_tasks=workers,
                 )
 
                 # Note: progress_tracker.start() is called by scanner internally
@@ -671,12 +704,6 @@ async def _scan_organization(
                 if progress_tracker:
                     progress_tracker.stop()
 
-            if not quiet:
-                pr_type = "blocked " if blocked_only else ""
-                console.print(
-                    f"\n📊 Found {len(prs_to_process)} {pr_type}PRs with potential markdown issues"
-                )
-
             if not prs_to_process:
                 if blocked_only:
                     console.print(
@@ -691,7 +718,7 @@ async def _scan_organization(
             # Display PRs
             if not quiet:
                 console.print(
-                    "\n🔍 Blocked PRs with potential markdown issues:"
+                    "\n🔍 Examining blocked pull requests for markdown/linting failures"
                 )
                 for blocked_pr in prs_to_process:
                     console.print(
@@ -705,14 +732,6 @@ async def _scan_organization(
                         "\n[yellow]🐛 GitHub Organisation DEBUG mode: only processing first pull request[/yellow]"
                     )
                 prs_to_process = prs_to_process[:1]
-            elif not quiet:
-                # Only show this message if NOT in debug mode
-                if dry_run:
-                    console.print(
-                        f"\n🔍 [DRY RUN] Would fix {len(prs_to_process)} PRs (no changes will be made)..."
-                    )
-                else:
-                    console.print(f"\n🔧 Fixing {len(prs_to_process)} PRs...")
 
             prs_fixed = 0
             prs_with_issues = 0
@@ -722,9 +741,7 @@ async def _scan_organization(
             for blocked_pr in prs_to_process:
                 try:
                     if not quiet:
-                        console.print(
-                            f"\n🔄 Processing: {blocked_pr.pr_info.repository}#{blocked_pr.pr_info.number}"
-                        )
+                        console.print(f"\n🔄 {blocked_pr.pr_info.url}")
 
                     result = await fixer.fix_pr_by_url(
                         blocked_pr.pr_info.url,
@@ -741,7 +758,26 @@ async def _scan_organization(
                             prs_fixed += 1
                             fixed_pr_urls.append(blocked_pr.pr_info.url)
                         if not quiet:
-                            console.print(f"[green]✅ {result.message}[/green]")
+                            # Handle multi-line messages
+                            message_lines = result.message.split("\n")
+                            if message_lines:
+                                # Check if this is a "no changes" message (starts with ⏩)
+                                if message_lines[0].startswith("⏩"):
+                                    # No changes - use green for entire message
+                                    console.print(
+                                        f"[green]{message_lines[0]}[/green]"
+                                    )
+                                else:
+                                    # Files were modified - use green for first line, orange for details
+                                    emoji = "☑️ " if dry_run else "✅"
+                                    console.print(
+                                        f"[green]{emoji} {message_lines[0]}[/green]"
+                                    )
+                                    # Print remaining lines in orange (details of what was fixed)
+                                    for line in message_lines[1:]:
+                                        console.print(
+                                            f"[orange1]{line}[/orange1]"
+                                        )
                     elif not quiet:
                         console.print(f"[yellow]⚠️  {result.message}[/yellow]")
 
@@ -754,7 +790,7 @@ async def _scan_organization(
 
             if dry_run:
                 console.print(
-                    f"\n[green]✅ [DRY RUN] Found issues in {prs_with_issues} PR(s) (no changes made)[/green]"
+                    f"\n[green]☑️  Found issues in {prs_with_issues} PR(s), but no changes made[/green]"
                 )
             elif prs_fixed > 0:
                 console.print(f"\n[green]✅ Fixed {prs_fixed} PR(s):[/green]")
@@ -906,9 +942,13 @@ def _process_file(
         if fix:
             logger.debug(f"Applying fixes to {file_path}")
             fixer = FileFixer(file_path, max_line_length=max_line_length)
-            fixes = fixer.fix_file(tables)
-            result.fixes_applied.extend(fixes)
-            logger.debug(f"Applied {len(fixes)} fixes to {file_path}")
+            fix_result = fixer.fix_file(tables)
+            # Note: fix_result is now FileFixResult, not a list of TableFix
+            # We don't track individual fixes here anymore, just log summary
+            logger.debug(
+                f"Applied fixes to {file_path}: {fix_result.tables_fixed} tables fixed, "
+                f"{fix_result.tables_with_md013} with MD013, {fix_result.tables_with_md060} with MD060"
+            )
 
     except (FileAccessError, TableParseError) as e:
         logger.error(f"Error processing {file_path}: {e}")
