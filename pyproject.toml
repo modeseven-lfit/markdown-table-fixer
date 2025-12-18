@@ -65,6 +65,7 @@ markdown-table-fixer = "markdown_table_fixer.cli:app"
 
 [tool.hatch.version]
 source = "vcs"
+fallback-version = "0.0.0"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/markdown_table_fixer/_version.py"
