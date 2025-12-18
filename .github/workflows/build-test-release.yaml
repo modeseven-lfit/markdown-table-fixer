@@ -350,14 +350,14 @@ jobs:
 
       - name: '⬇ Download build artefacts'
         # yamllint disable-line rule:line-length
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: "${{ needs.python-build.outputs.artefact_name }}"
           path: "${{ needs.python-build.outputs.artefact_path }}"
 
       - name: 'Attach build artefacts to release'
         # yamllint disable-line rule:line-length
-        uses: modeseven-lfreleng-actions/release-assets-action@initial-update  # Testing
+        uses: lfreleng-actions/release-assets-action@985ecd2ba521dde165514af406dd114d3db5dab6  # v0.1.0
         with:
           asset_paths: '["${{ needs.python-build.outputs.artefact_path }}/**"]'
           release_tag: "${{ needs.tag-validate.outputs.tag }}"

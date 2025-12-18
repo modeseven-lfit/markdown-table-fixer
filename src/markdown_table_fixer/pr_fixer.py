@@ -447,6 +447,22 @@ class PRFixer:
                 merge_state_status=pr_data.get("mergeable_state", "unknown"),
             )
 
+            # Check if PR is closed
+            pr_state = pr_data.get("state", "").lower()
+            if pr_state != "open":
+                # Check if it was merged
+                is_merged = pr_data.get("merged", False)
+                state_display = (
+                    "merged"
+                    if is_merged
+                    else (pr_state if pr_state else "closed")
+                )
+                return GitHubFixResult(
+                    pr_info=pr_info,
+                    success=False,
+                    message=f"Pull request #{pr_number} is {state_display} and cannot be processed",
+                )
+
             if not clone_url and update_method == "git":
                 return GitHubFixResult(
                     pr_info=pr_info,
