@@ -43,13 +43,13 @@ repos:
       - id: gitlint
 
   - repo: https://github.com/adrienverge/yamllint.git
-    rev: 79a6b2b1392eaf49cdd32ac4f14be1a809bbd8f7 # frozen: v1.37.1
+    rev: cba56bcde1fdd01c1deb3f945e69764c291a6530  # frozen: v1.38.0
     hooks:
       - id: yamllint
         types: [yaml]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: d96cc7adddf7d15b77f99dbd5d20e037dfd1b29c  # frozen: v0.14.9
+    rev: 45ef068da5f21267bb2a7ec4a623092959f09ce5  # frozen: v0.14.14
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
@@ -114,7 +114,7 @@ repos:
       - id: codespell
 
   - repo: https://github.com/lfreleng-actions/gha-workflow-linter
-    rev: 100fffb1dffb802767871aae69687b165e4bf782  # frozen: v0.1.13
+    rev: a7caf8f3a1a05688d1cee46615ff94def617e5a3  # frozen: v1.0.2
     hooks:
       - id: gha-workflow-linter
         args: [lint, .github/workflows/, --verbose, --no-auto-fix]
